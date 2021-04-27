@@ -88,26 +88,6 @@ class extrapolation():
         return extra
 
 
-def extract_handkeypoint(pred, true):
-    pred_hand_pose, pred_action_prob, pred_hand_conf, pred_object_pose, pred_object_prob, pred_object_conf = [
-        p.data.cpu().numpy() for p in pred]
-    true_hand_pose, true_action_prob, hand_mask, true_object_pose, true_object_prob, object_mask = [t.data.cpu().numpy()
-                                                                                                    for t in true]
-
-    true_hand_cell = np.unravel_index(hand_mask.argmax(), hand_mask.shape)
-
-    z, v, u = true_hand_cell[1:]
-    dels = pred_hand_pose[0, :, z, v, u].reshape(21, 3)
-    del_u, del_v, del_z = dels[:, 0], dels[:, 1], dels[:, 2]
-    hand_points, xy_points = training_dataset.target_to_control(del_u, del_v, del_z, (u, v, z))
-
-    dels = true_hand_pose[0, :, z, v, u].reshape(21, 3)
-    del_u, del_v, del_z = dels[:, 0], dels[:, 1], dels[:, 2]
-    true_handpoints, _ = training_dataset.target_to_control(del_u, del_v, del_z, (u, v, z))
-
-    return hand_points, xy_points, true_handpoints
-
-
 if __name__ == '__main__':
 
     flag_extra = False
@@ -115,7 +95,9 @@ if __name__ == '__main__':
 
     continue_train = False
     load_epoch = 0
-    model_name = '../models/unified_net_update.pth'
+    model_FCN_name = '../models/FCN.pth'
+    model_IKNet_name = '../models/IKNet.pth'
+
     HAND_MESH_MODEL_PATH = './IKNet/IKmodel/hand_mesh/hand_mesh_model.pkl'
 
     training_dataset = UnifiedPoseDataset(mode='train', loadit=True, name='train')
@@ -144,8 +126,11 @@ if __name__ == '__main__':
 
     if continue_train:
         device = torch.device('cuda:0')
-        state_dict = torch.load(model_name, map_location=str(device))
+        state_dict = torch.load(model_FCN_name, map_location=str(device))
         model.load_state_dict(state_dict)
+
+        state_dict = torch.load(model_IKNet_name, map_location=str(device))
+        IKNet.load_state_dict(state_dict)
         print("load success")
 
     param_list = list(model.parameters()) + list(IKNet.parameters())
@@ -163,6 +148,8 @@ if __name__ == '__main__':
         training_loss = 0.
 
         for batch, data in enumerate(tqdm(training_dataloader)):
+            #t1 = time.time()
+
             optimizer.zero_grad()
             image = data[0]
             if torch.isnan(image).any():
@@ -195,33 +182,43 @@ if __name__ == '__main__':
                 training_loss += loss.data.cpu().numpy()
                 # loss.backward()
                 # optimizer.step()
-
+            #t2 = time.time()
             ############################ IKNet ############################
             if flag_extra:
                 print("")
             else:
                 hand_points_rel, true_hand_points_rel = IKNet.extract_handkeypoint_batch(pred, true)
-                with torch.autograd.set_detect_anomaly(True):
-                    xyz = torch.tensor(hand_points_rel, requires_grad=True).cuda()
 
-                    _, theta_mpii_batch = IKNet(xyz.float())
+                xyz = torch.tensor(hand_points_rel, requires_grad=True).cuda()
 
-                    #theta_mpii = theta_mpii.cpu().numpy()
-                    for i in range(parameters.batch_size):
-                        theta_mpii = theta_mpii_batch[i]
-                        theta_mano = mpii_to_mano_torch(theta_mpii)
+                _, theta_mpii_batch = IKNet(xyz.float())
 
-                        xyz_FK = render.hand_mesh.set_abs_xyz_torch(theta_mano)
-                        # xyz_FK : mano order
-                        xyz_ori = xyz[i].type(torch.FloatTensor).cuda()
-                        xyz_ori = mpii_to_mano_torch(xyz_ori) * 10.0
+                loss_FK = 0
+                #theta_mpii = theta_mpii.cpu().numpy()
+                for i in range(parameters.batch_size):
+                    theta_mpii = theta_mpii_batch[i]
+                    theta_mano = mpii_to_mano_torch(theta_mpii)
 
-                        loss_FK = IKNet.ForwardKinematic_loss(xyz_FK, xyz_ori)
-                        training_loss += loss_FK.data.cpu().numpy()
-                        loss_FK.backward()
+                    xyz_FK = render.hand_mesh.set_abs_xyz_torch(theta_mano)
+                    # xyz_FK : mano order
+                    xyz_ori = xyz[i].type(torch.FloatTensor).cuda()
+                    xyz_ori = mpii_to_mano_torch(xyz_ori) * 10.0
+
+                    loss_FK += IKNet.ForwardKinematic_loss(xyz_FK, xyz_ori)
+
+            #t3 = time.time()
+
+            loss_FK.backward(retain_graph=True)
+            training_loss += loss_FK.data.cpu().numpy()
 
             loss.backward()
             optimizer.step()
+
+            #t4 = time.time()
+
+            # print("FCN : ", t2 - t1)
+            # print("IK : ", t3 - t2)
+            # print("backward : ", t4 - t3)
 
         training_loss = training_loss / batch
         writer.add_scalars('data/loss', {'train_loss': training_loss}, epoch)
@@ -316,6 +313,8 @@ if __name__ == '__main__':
             writer.add_scalars('data/loss', {'val_loss': validation_loss}, epoch)
             print("Epoch : {} finished. Validation Loss: {}".format(epoch, validation_loss))
             """
-            torch.save(model.state_dict(), model_name)
+            torch.save(model.state_dict(), model_FCN_name)
+            torch.save(IKNet.state_dict(), model_IKNet_name)
+
 
         print("Epoch : {} finished. Training Loss: {}.".format(epoch, training_loss))

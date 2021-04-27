@@ -135,7 +135,7 @@ def xyz_to_delta(xyz, joints_def):
 
 
 
-def xyz_to_delta_tensor(xyz, joints_def,device='cpu'):
+def xyz_to_delta_tensor(xyz, joints_def,device='gpu'):
     """
     Compute bone orientations from joint coordinates (child joint - parent joint).
     The returned vectors are normalized.
@@ -159,7 +159,6 @@ def xyz_to_delta_tensor(xyz, joints_def,device='cpu'):
     """
     delta = []
 
-
     for j in range(joints_def.n_joints):
         p = joints_def.parents[j]
         if p is None:
@@ -169,7 +168,7 @@ def xyz_to_delta_tensor(xyz, joints_def,device='cpu'):
     delta = torch.cat(delta,dim=0)
     delta = rearrange(delta,'(j c)->j c',c = 3)
 
-    lengths = torch.norm(delta,dim =-1,keepdim=True)
+    lengths = torch.norm(delta.data,dim =-1,keepdim=True)
     eps = torch.tensor(np.finfo(float).eps).to(device)
     delta /= torch.maximum(lengths,eps)
 
