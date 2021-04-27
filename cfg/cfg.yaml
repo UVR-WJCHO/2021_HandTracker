@@ -1,0 +1,20 @@
+image_width: 1920
+image_height: 1080
+pose_loss_weight: 0.1
+conf_loss_weight: 0.2
+object_loss_weight: 0.3
+action_loss_weight: 0.4
+num_objects: 4
+num_actions: 4
+num_hand_control_points: 21
+num_object_control_points: 21
+height_discretization: 13
+width_discretization: 13
+depth_discretization: 5
+sharpness: 2.
+pixel_threshold: 75
+depth_threshold: 75
+
+epochs: 100
+lr: 0.0001
+batch_size: 16
