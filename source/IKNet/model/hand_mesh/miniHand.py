@@ -77,13 +77,13 @@ class minimal_hand(nn.Module):
         return xyz, theta #[0]
 
 
-    def forward_withoutbatch_fortest(self, xyz):
+    def forward_withoutbatch_test(self, xyz):
         # b c h w == 128
         #uv, xyz = self.detnet(x)
         device = xyz.device
 
         #this 11-12 delta have some mistake, need to check why the different is so high.
-        delta, length = xyz_to_delta_tensor(xyz, MPIIHandJoints,device=device)
+        delta, length = xyz_to_delta(xyz, MPIIHandJoints,device=device)
 
         delta *= length
         pack = torch.cat([xyz, delta, self.mpii_ref_xyz.to(device), self.mpii_ref_delta.to(device)],dim=0).unsqueeze(0)
