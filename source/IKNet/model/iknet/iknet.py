@@ -75,8 +75,8 @@ class dense_bn(nn.Module):
         return self.dense(x)
     
 
-class iknet(nn.Module):
-    def __init__(self,inc,depth,width,joints = 21):
+class iknet_ext(nn.Module):
+    def __init__(self,inc,depth,width,joints = 21): # (84*3,6,1024)
         super().__init__()
 
         self.depth = depth
@@ -85,6 +85,9 @@ class iknet(nn.Module):
         
         #to match easily, I write it so stupidly.
         self.dense = dense_bn(inc,width)
+
+        self.extra = dense_bn(21*3,width)
+
         self.dense_1 = dense_bn(width,width)
         self.dense_2 = dense_bn(width,width)
         self.dense_3 = dense_bn(width,width)
@@ -126,6 +129,56 @@ class iknet(nn.Module):
         return  self.__eps
 
 
+class iknet(nn.Module):
+    def __init__(self, inc, depth, width, joints=21):  # (84*3,6,1024)
+        super().__init__()
+
+        self.depth = depth
+        self.width = width
+        self.__eps = torch.tensor(np.finfo(np.float32).eps).float()
+
+        # to match easily, I write it so stupidly.
+        self.dense = dense_bn(inc, width)
+        self.dense_1 = dense_bn(width, width)
+        self.dense_2 = dense_bn(width, width)
+        self.dense_3 = dense_bn(width, width)
+        self.dense_4 = dense_bn(width, width)
+        self.dense_5 = dense_bn(width, width)
+
+        self.dense_6 = nn.Linear(width, joints * 4)
+
+    def forward(self, x):
+        '''
+        joints : 21*4
+        x :(batch 84 ,3) --> (batch 84*3)
+        '''
+        x = rearrange(x, 'b j c -> b (j c)', c=3)
+        device = x.device
+
+        x = self.dense(x)
+        x = self.dense_1(x)
+        x = self.dense_2(x)
+        x = self.dense_3(x)
+        x = self.dense_4(x)
+        x = self.dense_5(x)
+
+        theta_raw = self.dense_6(x)
+        theta_raw = rearrange(theta_raw, 'b (j n) -> b j n', n=4)
+
+        norm = torch.maximum(torch.norm(theta_raw, dim=-1, keepdim=True), self.eps.to(device))
+
+        theta_pos = theta_raw / norm
+
+        theta_neg = theta_pos * -1
+
+        flag = repeat(theta_pos[:, :, 0] > 0, 'b j ->b j c', c=4)
+        theta = torch.where(flag, theta_pos, theta_neg)
+
+        return theta, norm
+
+    @property
+    def eps(self):
+        return self.__eps
 
 
 if __name__ == '__main__':

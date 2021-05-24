@@ -44,7 +44,7 @@ class o3d_render():
         return uv
 
     def __init_platform__(self,module_path,window_size,visible =False):
-        view_mat = axangle2mat([1, 0, 0], 1*np.pi) # align different coordinate systems
+        view_mat = axangle2mat([0, 1, 0], 1*np.pi) # align different coordinate systems
         hand_mesh = HandMesh(module_path)
         mesh = o3d.geometry.TriangleMesh()
         mesh.triangles = o3d.utility.Vector3iVector(hand_mesh.faces)

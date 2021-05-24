@@ -13,6 +13,7 @@ from PIL import Image
 from torchvision import transforms, utils
 from torch.utils.data import Dataset, DataLoader
 import cv2
+import random
 
 
 class UnifiedPoseDataset(Dataset):
@@ -23,6 +24,7 @@ class UnifiedPoseDataset(Dataset):
         # 1920*1080 image to 32*32*5 box
         # only control depth_discretization parameter(=5) in cfg.yaml
         ###
+        self.offset = 0
 
         self.name = name
         self.root = root
@@ -44,6 +46,10 @@ class UnifiedPoseDataset(Dataset):
 
         self.camera_intrinsics = np.array([[1395.749023, 0, 935.732544],
                                            [0, 1395.749268, 540.681030],
+                                           [0, 0, 1]])
+
+        self.depth_intrinsics = np.array([[475.065948, 0, 315.944855],
+                                           [0,  475.065857, 245.287079],
                                            [0, 0, 1]])
 
         if not loadit:
@@ -77,6 +83,8 @@ class UnifiedPoseDataset(Dataset):
                 dataset['train'][subject] = dict()
                 dataset['test'][subject] = dict()
 
+                random.shuffle(actions)
+
                 for action in actions:
                     dataset['train'][subject][action] = dict()
                     dataset['test'][subject][action] = dict()
@@ -88,6 +96,8 @@ class UnifiedPoseDataset(Dataset):
 
                     data_split = int(len(sequences) * 3 / 4) + 1
 
+                    random.shuffle(sequences)
+
                     for sequence in sequences:
 
                         if int(sequence) < data_split:
@@ -96,12 +106,14 @@ class UnifiedPoseDataset(Dataset):
                             dataset['test'][subject][action][int(sequence)] = list()
 
                         frames = len(os.listdir(os.path.join(root, 'Video_files', subject, action, sequence, 'color')))
+                        #frames_d = len(os.listdir(os.path.join(root, 'Video_files', subject, action, sequence, 'depth')))
 
                         for frame in range(frames):
                             if int(sequence) < data_split:
                                 dataset['train'][subject][action][int(sequence)].append(frame)
                             else:
                                 dataset['test'][subject][action][int(sequence)].append(frame)
+
 
             print(yaml.dump(dataset))
             self.samples = dict()
@@ -126,10 +138,13 @@ class UnifiedPoseDataset(Dataset):
             self.save_samples(mode)
 
         else:
-
             self.samples = self.load_samples(mode)
 
+        self.sample_len = len(self.samples)
+        self.randomize_order()
 
+    def randomize_order(self):
+        self.offset = random.randint(0, self.sample_len - 1)
 
     def load_samples(self, mode):
         with open('../cfg/{}.pkl'.format(self.name), 'rb') as f:
@@ -177,6 +192,21 @@ class UnifiedPoseDataset(Dataset):
         img = np.transpose(img, (2, 0, 1))
         return img
 
+    def get_depth(self, sample):
+
+        img = self.fetch_depth(sample)
+        img_np = np.array(img)
+
+        if self.mode == 'train':
+            img = self.transform(img)
+        img = np.asarray(img.resize((416, 416), Image.ANTIALIAS), dtype=np.float32)
+        #img = np.flip(img, axis=1)
+        img = img / 255.
+        # cv2.imshow("img in dataset", img)
+        # cv2.waitKey(1)
+        img = np.transpose(img, (2, 0, 1))
+        return img
+
     def fetch_image(self, sample):
         img_path = os.path.join(self.root, 'Video_files', sample['subject'],
                                 sample['action_name'], sample['seq_idx'], 'color',
@@ -184,7 +214,16 @@ class UnifiedPoseDataset(Dataset):
         img = Image.open(img_path)
         return img
 
+    def fetch_depth(self, sample):
+        img_path = os.path.join(self.root, 'Video_files', sample['subject'],
+                                sample['action_name'], sample['seq_idx'], 'depth',
+                                'depth_{:04d}.png'.format(sample['frame_idx']))
+        img = Image.open(img_path)
+        return img
+
     def preprocess(self, idx):
+        idx = (idx + self.offset) % (self.sample_len)
+
         sample = self.samples[idx]
 
         object_category = {
@@ -245,6 +284,18 @@ class UnifiedPoseDataset(Dataset):
         # object class tensor
         true_object_prob = torch.zeros(5, 13, 13, dtype=torch.long)
         true_object_prob[z, v, u] = object_category[sample['object']]
+
+        ### depth image processing ###
+        # depth = torch.from_numpy(self.get_depth(sample))
+        #
+        # # need (n, 3) array of points
+        # depth_points = depth
+        # homogeneous_depth = np.concatenate([depth_points, np.ones([depth_points.shape[0], 1])], 1)
+        #
+        # Depth = np.linalg.inv(self.camera_intrinsics).dot(depth_points)
+        # DepthToRGB = self.camera_pose.dot(Depth.T).T[:, :3].astype(np.float32)
+        # Depth_projection = (DepthToRGB / DepthToRGB[:, 2:])[:, :2]
+        # ###
 
         # Hand Properties
         reorder_idx = np.array([0, 1, 6, 7, 8, 2, 9, 10, 11, 3, 12, 13, 14, 4, 15, 16, 17, 5, 18, 19, 20])

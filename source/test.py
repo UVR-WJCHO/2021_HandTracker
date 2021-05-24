@@ -51,7 +51,7 @@ if __name__ == '__main__':
     training_dataloader = torch.utils.data.DataLoader(training_dataset, batch_size = 1, shuffle=False, num_workers=1)
 
     model = UnifiedNetwork()
-    model.load_state_dict(torch.load('../models/unified_net_original.pth'))
+    model.load_state_dict(torch.load('../models/FCN.pth'))
     model.eval()
     model.cuda()
 
@@ -67,10 +67,10 @@ if __name__ == '__main__':
     mesh_smoother = OneEuroFilter(4.0, 0.0)
     clock = pygame.time.Clock()
 
-    hand_machine = minimal_hand(config.HAND_MESH_MODEL_PATH, './IKNet/weights/detnet.pth',
-                                './IKNet/weights/iknet.pth')
-    hand_machine.cuda()
-    hand_machine.eval()
+    IKNet = minimal_hand(config.HAND_MESH_MODEL_PATH, '../models/IKNet.pth')
+    # hand_machine = minimal_hand(config.HAND_MESH_MODEL_PATH, './IKNet/weights/detnet.pth', './IKNet/weights/iknet.pth')
+    IKNet.cuda()
+    IKNet.eval()
 
     cap = cv2.VideoCapture(0)
 
@@ -162,13 +162,13 @@ if __name__ == '__main__':
 
                 # check 'hand_points' device
                 xyz = torch.from_numpy(hand_points_rel).cuda()
-                _, theta_mpii = hand_machine(xyz.float())
+                _, theta_mpii = IKNet(xyz.float())
             else:
                 image = image.cuda()
-                xyz, theta_mpii = hand_machine(image)
+                xyz, theta_mpii = IKNet(image)
 
             theta_mpii = theta_mpii.detach().cpu().numpy()
-            theta_mano = mpii_to_mano(theta_mpii)
+            theta_mano = mpii_to_mano(np.squeeze(theta_mpii))
 
             # rendering
 
@@ -184,7 +184,7 @@ if __name__ == '__main__':
 
             xyz_FK = render.hand_mesh.set_abs_xyz(theta_mano)
             xyz_ori = np.squeeze(xyz.cpu().numpy())
-            xyz_ori = mpii_to_mano(xyz_ori) * 10.0
+            xyz_ori = mpii_to_mano(xyz_ori)# * 10.0
 
             cv2.imshow("result", render_img)
             cv2.waitKey(0)
@@ -199,7 +199,7 @@ if __name__ == '__main__':
                 img = training_dataset.fetch_image(training_dataset.samples[batch])
                 imgAnno = showHandJoints(img, handKps)
                 imgAnno_rgb = imgAnno[:, :, [2, 1, 0]]
-
+                imgAnno_rgb = cv2.flip(imgAnno_rgb, 1)
                 cv2.imshow("rgb pred", imgAnno_rgb)
                 cv2.waitKey(0)
 

@@ -20,14 +20,18 @@ from IKNet.model.iknet import iknet
 
 
 class minimal_hand(nn.Module):
-    def __init__(self,mano_path,detnet_path =None,iknet_path=None):
+    def __init__(self,mano_path,iknet_path=None):
         super().__init__()
         self.para_init(mano_path)
-        self.detnet = detnet(stacks = 1)
+        #self.detnet = detnet(stacks = 1)
         self.iknet = iknet(inc = 84*3,depth = 6, width = 1024)
 
-        self.model_init(detnet_path,iknet_path)
+        # initialize all param
+        #torch.nn.init.xavier_uniform(self.iknet.weight)
 
+        # load model
+        self.model_init(iknet_path)
+        # if extra == True, self.model_init_ext(iknet_path)
         self.setup_losses()
 
     def setup_losses(self):
@@ -53,23 +57,30 @@ class minimal_hand(nn.Module):
                                            [0, 0, 1]])
 
     def forward(self, xyz_batch):
-        # b c h w == 128
-        # uv, xyz = self.detnet(x)
         device = xyz_batch.device
 
-        xyz = xyz_batch[0]
-        # this 11-12 delta have some mistake, need to check why the different is so high.
-        delta, length = xyz_to_delta_tensor(xyz, MPIIHandJoints, device=device)
-        delta *= length
-        pack = torch.cat([xyz, delta, self.mpii_ref_xyz.to(device), self.mpii_ref_delta.to(device)], dim=0).unsqueeze(0)
-
-        for i in range(xyz_batch.shape[0] - 1):
-            xyz = xyz_batch[i+1]
+        # 1 batch (testing)
+        if xyz_batch.shape[0] == 21:
+            xyz = xyz_batch
             delta, length = xyz_to_delta_tensor(xyz, MPIIHandJoints, device=device)
             delta *= length
-            pack_stack = torch.cat([xyz, delta, self.mpii_ref_xyz.to(device), self.mpii_ref_delta.to(device)],
+            pack = torch.cat([xyz, delta, self.mpii_ref_xyz.to(device), self.mpii_ref_delta.to(device)],
                              dim=0).unsqueeze(0)
-            pack = torch.cat([pack, pack_stack], dim=0)
+        # multiple batch
+        else:
+            xyz = xyz_batch[0]
+            # this 11-12 delta have some mistake, need to check why the different is so high.
+            delta, length = xyz_to_delta_tensor(xyz, MPIIHandJoints, device=device)
+            delta *= length
+            pack = torch.cat([xyz, delta, self.mpii_ref_xyz.to(device), self.mpii_ref_delta.to(device)], dim=0).unsqueeze(0)
+
+            for i in range(xyz_batch.shape[0] - 1):
+                xyz = xyz_batch[i+1]
+                delta, length = xyz_to_delta_tensor(xyz, MPIIHandJoints, device=device)
+                delta *= length
+                pack_stack = torch.cat([xyz, delta, self.mpii_ref_xyz.to(device), self.mpii_ref_delta.to(device)],
+                                 dim=0).unsqueeze(0)
+                pack = torch.cat([pack, pack_stack], dim=0)
 
         # pack : (batch, 84 ,3)
         theta, _ = self.iknet(pack)
@@ -133,7 +144,7 @@ class minimal_hand(nn.Module):
         root = hand_points[9, :]
         hand_points_rel = (root - hand_points) / 100.
 
-        return hand_points_rel, true_hand_points_rel
+        return hand_points_rel, true_hand_points_rel, root, hand_points, true_hand_points
         
     def extract_handkeypoint_batch(self, pred, true):
         pred_hand_pose_b, _, _, _, _, _ = [p.data.cpu().numpy() for p in pred]
@@ -204,9 +215,24 @@ class minimal_hand(nn.Module):
         return self.__mpii_ref_xyz
     @property
     def mpii_ref_delta(self):
-        return self.__mpii_ref_delta  
+        return self.__mpii_ref_delta
 
-    def model_init(self,detnet,iknet):
+    def model_init_ext(self, iknet_saved):
+        if iknet == None:
+            raise NotImplementedError
+        pretrained_dict = iknet_saved.state_dict()
+        new_model_dict = self.iknet.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in new_model_dict}
+        new_model_dict.update(pretrained_dict)
+        self.iknet.load_state_dict(new_model_dict)
+
+
+    def model_init(self, iknet):
+        if iknet == None:
+            raise NotImplementedError
+        self.iknet.load_state_dict(torch.load(iknet))
+
+    def model_init_backup(self,detnet,iknet):
         if detnet == None:
             raise NotImplementedError
         if iknet == None:
