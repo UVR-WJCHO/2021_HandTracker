@@ -8,7 +8,7 @@ from tqdm import tqdm
 import torch
 from cfg import parameters
 from net import UnifiedNetwork
-from dataset import UnifiedPoseDataset
+from dataset import UnifiedPoseDataset, HO3D_v2_Dataset
 import numpy as np
 from tensorboardX import SummaryWriter
 import time
@@ -98,11 +98,18 @@ if __name__ == '__main__':
     # model_IKNet_name = '../models/IKNet_M2.pth'
     HAND_MESH_MODEL_PATH = './IKNet/IKmodel/hand_mesh/hand_mesh_model.pkl'
 
-    training_dataset = UnifiedPoseDataset(mode='train', loadit=True, name='train')
-    testing_dataset = UnifiedPoseDataset(mode='test', loadit=True, name='test')
+    # training_dataset = UnifiedPoseDataset(mode='train', loadit=True, name='train')
+    # testing_dataset = UnifiedPoseDataset(mode='test', loadit=True, name='test')
+    # training_dataloader = torch.utils.data.DataLoader(training_dataset, batch_size=parameters.batch_size, shuffle=False, num_workers=4)
+    # testing_dataloader = torch.utils.data.DataLoader(testing_dataset, batch_size=parameters.batch_size, shuffle=False, num_workers=4)
 
-    training_dataloader = torch.utils.data.DataLoader(training_dataset, batch_size=parameters.batch_size, shuffle=False, num_workers=4)
-    testing_dataloader = torch.utils.data.DataLoader(testing_dataset, batch_size=parameters.batch_size, shuffle=False, num_workers=4)
+    training_dataset_HO3D = HO3D_v2_Dataset(mode='train', loadit=True)
+    testing_dataset_HO3D = HO3D_v2_Dataset(mode='test', loadit=True)
+
+    training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D, batch_size=parameters.batch_size, shuffle=False,
+                                                      num_workers=4)
+    testing_dataloader = torch.utils.data.DataLoader(testing_dataset_HO3D, batch_size=parameters.batch_size, shuffle=False,
+                                                     num_workers=4)
 
     extp_module = extrapolation()
 
@@ -139,7 +146,6 @@ if __name__ == '__main__':
     # optimizer_IKN = torch.optim.Adam(IKNet.parameters(), lr=lr_IKN)
 
     best_loss = float('inf')
-    #writer = SummaryWriter()
 
     epoch_range = parameters.epochs
     if continue_train:

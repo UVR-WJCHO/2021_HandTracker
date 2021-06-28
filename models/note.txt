@@ -1,0 +1,2 @@
+base : 100epoch, base FCN + base IKNet 
+init : base model 20epoch version

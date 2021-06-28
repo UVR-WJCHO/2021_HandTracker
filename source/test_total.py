@@ -91,7 +91,7 @@ class extrapolation():
 if __name__ == '__main__':
     flag_extra = False
 
-    load_FCN_name = '../models/FCN_base.pth'
+    load_FCN_name = '../models/unified_net_addextra.pth'
     load_IKNet_name = '../models/backup_iknet.pth'
 
     training_dataset = UnifiedPoseDataset(mode='test', loadit=True, name='test')
@@ -210,15 +210,15 @@ if __name__ == '__main__':
 
 
             ################# original image visualization ###################
-            # xy_points = np.squeeze(xy_points.cpu().numpy())
-            # handKps = xy_points[:, :-1]
-            #
-            # img = training_dataset.fetch_image(training_dataset.samples[batch])
-            # imgAnno = showHandJoints(img, handKps)
-            # imgAnno_rgb = imgAnno[:, :, [2, 1, 0]]
-            # imgAnno_rgb = cv2.flip(imgAnno_rgb, 1)
-            # cv2.imshow("rgb pred", imgAnno_rgb)
-            # cv2.waitKey(0)
+            xy_points = np.squeeze(xy_points.cpu().numpy())
+            handKps = xy_points[:, :-1]
+
+            img = training_dataset.fetch_image(training_dataset.samples[batch])
+            imgAnno = showHandJoints(img, handKps)
+            imgAnno_rgb = imgAnno[:, :, [2, 1, 0]]
+            imgAnno_rgb = cv2.flip(imgAnno_rgb, 1)
+            cv2.imshow("rgb pred", imgAnno_rgb)
+            cv2.waitKey(0)
 
         print(loss_bfIK * 1. / (batch - outlier_count))
         print(loss_afIK * 1. / (batch - outlier_count))
