@@ -199,7 +199,10 @@ def showHandJoints_vis(imgInOrg, gtIn, vis=None, filename=None):
                 cv2.fillConvexPoly(imgIn, polygon, color=limb_color)
 
         for joint_num in range(gtIn.shape[0]):
-            if joint_num in vis:
+            if joint_num is 0:
+                cv2.circle(imgIn, center=(gtIn[joint_num][0], gtIn[joint_num][1]), radius=3, color=[255, 255, 255], thickness=3)
+
+            elif joint_num in vis:
                 if PYTHON_VERSION == 3:
                     joint_color = list(map(lambda x: x + 35 * (joint_num % 4), joint_color_code[0]))
                 else:

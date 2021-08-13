@@ -13,7 +13,7 @@ from einops import rearrange
 from open3d import io as io
 
 from cfg import parameters
-from net import UnifiedNetwork, UnifiedNetwork_update
+from net import UnifiedNetwork_update, UnifiedNetwork_v2
 from dataset import HO3D_v2_Dataset
 from util import extrapolation
 
@@ -30,28 +30,34 @@ from IKNet.capture import OpenCVCapture
 
 if __name__ == '__main__':
 
-    flag_extra = False
-    flag_suffle = True
-
+    activate_extra = False
     continue_train = False
     load_epoch = 0
 
-    model_FCN_name = '../models/FCN_HO3D_trial_1.pth'
+    model_FCN_name = '../models/FCN_HO3D_08012.pth'
     HAND_MESH_MODEL_PATH = './IKNet/IKmodel/hand_mesh/hand_mesh_model.pkl'
 
-    training_dataset_HO3D = HO3D_v2_Dataset(mode='train', loadit=True, shuffle=flag_suffle)
-    testing_dataset_HO3D = HO3D_v2_Dataset(mode='test', loadit=True, shuffle=flag_suffle)
+    # dataset pkl are aligned
+    # To shuffle the dataset w.r.t subject : set shuffle_seq=True
+    # To shuffle the dataset totally : set shuffle=True in DataLoader
+    training_dataset_HO3D = HO3D_v2_Dataset(mode='train', cfg='train_align', loadit=True, shuffle_seq=False)
 
-    training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D, batch_size=parameters.batch_size, shuffle=False,
-                                                      num_workers=4)
-    testing_dataloader = torch.utils.data.DataLoader(testing_dataset_HO3D, batch_size=parameters.batch_size, shuffle=False,
-                                                     num_workers=4)
+    # testing_dataset_HO3D = HO3D_v2_Dataset(mode='test', cfg='test_align', loadit=True, shuffle_seq=False)
+    # testing_dataloader = torch.utils.data.DataLoader(testing_dataset_HO3D, batch_size=parameters.batch_size, shuffle=False,
+    #                                                  num_workers=4)
+
+    # initial training dataset is randomized
+    # training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D, batch_size=parameters.batch_size, shuffle=True,
+    #                                                   num_workers=4)
+    training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D, batch_size=parameters.batch_size,
+                                                      shuffle=False,
+                                                      num_workers=1)
 
     device = torch.device('cuda:0')
 
-    extp_module = extrapolation()
-    model = UnifiedNetwork_update()
-    model.load_state_dict(torch.load('../models/unified_net_addextra.pth', map_location=str(device)), strict=False)
+    extp_module = extrapolation(parameters.batch_size, vis_threshold=0.5)
+    model = UnifiedNetwork_v2()
+    #model.load_state_dict(torch.load('../models/unified_net_addextra.pth', map_location=str(device)), strict=False)
 
     assert (torch.cuda.is_available())
 
@@ -64,18 +70,45 @@ if __name__ == '__main__':
 
     lr_FCN = 0.0001
     optimizer_FCN = torch.optim.Adam(model.parameters(), lr=lr_FCN)
-
     best_loss = float('inf')
 
-    epoch_range = parameters.epochs
+    epoch_range = 50    #parameters.epochs
     if continue_train:
         epoch_range -= load_epoch
 
+    model.train()
+    flag_extra = False
     for epoch in range(epoch_range):
-        # train
-        model.train()
-        training_loss_FCN = 0.
-        training_loss_IK = 0.
+        if epoch == 0:
+            epoch = load_epoch
+        training_loss = 0.
+
+        # if epoch != 0 and epoch % 10 == 0:
+        #     lr_FCN *= 0.8
+        #     optimizer_FCN = torch.optim.Adam(model.parameters(), lr=lr_FCN)
+
+        # after several epoch, reload the dataset and dataloader as sequential but shuffled subject.
+        if activate_extra and epoch != 0 and epoch % 10 == 0:
+            print("change dataset type")
+            if not flag_extra:
+                flag_extra = True
+            else:
+                flag_extra = False
+
+            if flag_extra is True:
+                print("...reloading sequential dataset")
+                training_dataset_HO3D = HO3D_v2_Dataset(mode='train', cfg='train_align', loadit=True, shuffle_seq=True)
+                training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D,
+                                                                  batch_size=parameters.batch_size,
+                                                                  shuffle=False, num_workers=1)
+                print("...done")
+            else:
+                print("...reloading shuffled dataset")
+                training_dataset_HO3D = HO3D_v2_Dataset(mode='train', cfg='train_align', loadit=True, shuffle_seq=False)
+                training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D,
+                                                                  batch_size=parameters.batch_size, shuffle=True,
+                                                                  num_workers=4)
+                print("...done")
 
         for batch, data in enumerate(tqdm(training_dataloader)):
             #t1 = time.time()
@@ -85,23 +118,20 @@ if __name__ == '__main__':
             if torch.isnan(image).any():
                 raise ValueError('Image error')
 
-            true = [x.cuda() for x in data[1:]]   # added sequence index in dataset
+            true = [x.cuda() for x in data[1:-2]]
 
-            # vis = data[-1].cuda()
-
-            ############################ FCN ############################
+        ############################ FCN ############################
             if flag_extra:
-                seq_idx = data[-1]  # tupple, string
-                curr_gt = data[1]
-                hand_mask_list = data[3]
-                batch_len = hand_mask_list.shape[0]
-                stacked_gt = extp_module.grid_to_3d(curr_gt, hand_mask_list, batch_len).cuda()
-                # stacked_gt : torch, torch.Size([batchsize+2, 22, 3]), gpu
+                subject = data[-2]  # tupple, string
+                vis_gt = data[-1]   # (batch, 21)
+                curr_gt = data[1]   # (batch, 63, 5, 13, 13)
+                hand_mask_list = data[2]    # (batch, 5, 13, 13)
 
                 # At initial or if training dataset's sequence # changed, apply zero extra_keypoint
                 # if not, extrapolate keypoint from previous pred
-                extra = extp_module.extrapolate(batch_len, seq_idx)
-                # extra : (batch_size, 22, 3)
+                stacked_gt = extp_module.grid_to_3d(curr_gt, hand_mask_list, vis_gt)     # stacked_gt : torch, torch.Size([batchsize+2, 21, 4]), gpu
+                extra = extp_module.extrapolate(subject).cuda()    # extra : (batch_size, 21, 3)
+                #extra = extp_module.grid_extrapolate(subject, curr_gt, vis_gt)
 
                 pred = model(image.cuda(), extra)
                 loss = model.total_loss(pred, true)
@@ -111,14 +141,13 @@ if __name__ == '__main__':
                 pred = model(image.cuda())
                 loss = model.total_loss(pred, true)
 
-                training_loss_FCN += loss.data.cpu().numpy()
+                training_loss += loss.data.cpu().numpy()
 
             loss.backward()
             optimizer_FCN.step()
 
-        training_loss_FCN = training_loss_FCN / batch
-        training_loss = training_loss_FCN
-        print("Epoch : {} finished. Training Loss_FCN: {}.".format(epoch, training_loss_FCN))
+        training_loss = training_loss / batch
+        print("Epoch : {} finished. Training loss: {}.".format(epoch, training_loss))
 
         # validation and save model
         if epoch % 10 == 0:

@@ -16,6 +16,8 @@ import cv2
 import random
 from vis_utils.vis_utils import *
 
+from positional_encodings import PositionalEncoding1D, PositionalEncoding2D, PositionalEncoding3D
+
 
 def _assert_exist(p):
     msg = 'File does not exists: %s' % p
@@ -30,10 +32,9 @@ jointsMapManoToSimple = [0,
                          7, 8, 9, 20]
 
 
+class HO3D_v2_Dataset_update(Dataset):
 
-class HO3D_v2_Dataset(Dataset):
-
-    def __init__(self, mode='train', root='../../dataset/HO3D_V2', loadit=False, shuffle=False):
+    def __init__(self, mode='train', root='../../dataset/HO3D_V2', cfg='train',loadit=False):
         ###
         # initial setting
         # 640*480 image to 32*32*5 box
@@ -41,7 +42,7 @@ class HO3D_v2_Dataset(Dataset):
         ###
         self.coord_change_mat = np.array([[1., 0., 0.], [0, -1., 0.], [0., 0., -1.]], dtype=np.float32)
 
-        self.name = mode
+        self.name = cfg
         self.root = root
         self.loadit = loadit
         self.mode = mode
@@ -73,6 +74,10 @@ class HO3D_v2_Dataset(Dataset):
                                            [0,  475.065857, 245.287079],
                                            [0, 0, 1]])
 
+        p_enc_3d = PositionalEncoding3D(21)
+        z = torch.zeros((1, 13, 13, 5, 21))
+        self.pos_encoder = p_enc_3d(z)
+
         if not loadit:
 
             # subjects = [1, 2, 3, 4, 5, 6]
@@ -95,7 +100,7 @@ class HO3D_v2_Dataset(Dataset):
 
                 rgb_set = list(os.listdir(os.path.join(root, mode, subject, 'rgb')))
                 frames = len(rgb_set)
-                random.shuffle(rgb_set)
+                # random.shuffle(rgb_set)
 
                 data_split = int(frames * 4 / 5) + 1
 
@@ -111,15 +116,17 @@ class HO3D_v2_Dataset(Dataset):
             for i in range(2):
                 self.samples = dict()
                 self.name = modes[i]
-                idx = 0
 
                 for subject in list(dataset[modes[i]]):
+                    self.samples[subject] = dict()
+
+                    idx = 0
                     for frame in dataset[modes[i]][subject]:
                         sample = {
                             'subject': subject,
-                            'frame_idx': frame[:-4]
+                            'frame_idx': frame[:-4],
                         }
-                        self.samples[idx] = sample
+                        self.samples[subject][idx] = sample
                         idx += 1
 
             #self.clean_data()
@@ -131,12 +138,19 @@ class HO3D_v2_Dataset(Dataset):
             ### test meta data has missing annotation, split training dataset and test
             self.mode = 'train'
 
-        self.sample_len = len(self.samples)
-        if shuffle:
-            self.randomize_order()
+            self.sample_len = len(self.samples)
+            self.subject_order = np.arange(self.sample_len)
 
-    def randomize_order(self):
-        self.offset = random.randint(0, self.sample_len - 1)
+            self.samples_reorder = dict()
+            idx = 0
+            for subject in self.subject_order:
+                for k, v in self.samples[subject].items():
+                    self.samples_reorder[idx] = v
+                    idx += 1
+
+            self.samples = self.samples_reorder
+            self.sample_len = len(self.samples)
+
 
     def load_samples(self, mode):
         with open('../cfg/HO3D_v2/{}.pkl'.format(self.name), 'rb') as f:
@@ -257,9 +271,527 @@ class HO3D_v2_Dataset(Dataset):
         objLabel: Object label as given in YCB dataset
         camMat: Intrinsic camera parameters
         """
-        idx = idx % (self.sample_len)
+        #idx = idx % (self.sample_len)
+        sample = self.samples[idx]
+
+        frame_idx = int(sample['frame_idx'])
+
+        img, depth, meta = self.read_data(sample)
+        # subject = sample['subject']
+
+        objCorners = meta['objCorners3DRest']
+        objCornersTrans = np.matmul(objCorners, cv2.Rodrigues(meta['objRot'])[0].T) + meta['objTrans']
+        objCornersTrans = objCornersTrans.dot(self.coord_change_mat.T) * 1000.
+        objcontrolPoints = self.get_box_3d_control_points(objCornersTrans)
+        objKps = project_3D_points(meta['camMat'], objcontrolPoints, is_OpenGL_coords=False)
+
+        handJoints3D = meta['handJoints3D']
+        handJoints3D = handJoints3D.dot(self.coord_change_mat.T) * 1000.
+        handKps = project_3D_points(meta['camMat'], handJoints3D, is_OpenGL_coords=False)
+
+        handKps = handKps[jointsMapManoToSimple]
+        handJoints3D = handJoints3D[jointsMapManoToSimple]
+
+        handKps_ = np.round(handKps).astype(np.int)
+        visible = []
+        for i in range(21):
+            if handKps_[i][0] >= 640 or handKps_[i][1] >= 480:
+                continue
+            d_img = depth[handKps_[i][1], handKps_[i][0]]
+            d_gt = handJoints3D[i][-1]
+            if np.abs(d_img - d_gt) < 0.04:
+                visible.append(i)
+
+        # depth_proc = np.copy(depth)
+        # depth_proc[depth > 1.0] = 0.0
+        # imgAnno = showHandJoints_vis(img, handKps, vis=visible)
+        # depthAnno = showHandJoints(depth_proc, handKps)
+        #
+        # #imgAnno = showHandJoints(img, handKps)
+        # # imgAnno = showObjJoints(imgAnno, objKps, lineThickness=2)
+        # rgb = img[:, :, [0, 1, 2]]
+        # cv2.imshow("rgb", rgb)
+        # anno = imgAnno[:, :, [0, 1, 2]]
+        # cv2.imshow("anno", anno)
+        # cv2.imshow("depthAnno", depthAnno)
+        # cv2.waitKey(0)
+
+        ### object pose ###
+        # get offset w.r.t top/left corner of the cell
+        del_u, del_v, del_z, cell = self.control_to_target(objKps, objcontrolPoints)
+
+        # object pose tensor
+        true_object_pose = torch.zeros(21, 3, 5, 13, 13, dtype=torch.float32)
+        u, v, z = cell
+        pose = np.vstack((del_u, del_v, del_z)).T
+        true_object_pose[:, :, z, v, u] = torch.from_numpy(pose)
+        true_object_pose = true_object_pose.view(-1, 5, 13, 13)     # (63, 5, 13, 13)
+
+        # object mask
+        object_mask = torch.zeros(5, 13, 13, dtype=torch.float32)
+        object_mask[z, v, u] = 1
+
+
+        ### hand pose ###
+        del_u, del_v, del_z, cell = self.control_to_target(handKps, handJoints3D)  # handKps : [215.8, 182.1] , ...   /  handJoints3D : [~, ~, 462.2] , ...
+        # hand pose tensor
+        true_hand_pose = torch.zeros(21, 3, 5, 13, 13, dtype=torch.float32)
+        u, v, z = cell
+        pose = np.vstack((del_u, del_v, del_z)).T
+        true_hand_pose[:, :, z, v, u] = torch.from_numpy(pose)
+        true_hand_pose = true_hand_pose.view(-1, 5, 13, 13)
+        # hand mask
+        hand_mask = torch.zeros(5, 13, 13, dtype=torch.float32)
+        hand_mask[z, v, u] = 1
+
+        # hand visibility per joint
+        vis = np.zeros(21, dtype=np.float32)
+        if len(visible) != 0:
+            vis[np.array(visible)] = 1
+
+        param_vis = torch.zeros(21, 5, 13, 13, dtype=torch.float32)
+        param_vis[:, z, v, u] = torch.from_numpy(vis)
+        param_vis = param_vis.view(-1, 5, 13, 13)
+
+        image = None
+
+        if self.loadit:
+            image = torch.from_numpy(self.get_image(sample))
+            if int(image.shape[0]) != 3:
+                print("image shpae wrong")
+                image = image[:-1, :, :]
+            image = self.normalize(image)
+
+        ### preprocess extrapolated keypoint GT ###
+        prev_handKps = dict()
+        prev_handJoints3D = dict()
+        if frame_idx < 2:
+            for i in range(2):
+                handKps = np.zeros((21, 2), dtype=np.float32)
+                handJoints3D = np.zeros((21, 3), dtype=np.float32)
+
+                prev_handKps[i] = handKps
+                prev_handJoints3D[i] = handJoints3D
+        else:
+            for i in range(2):
+                prev_sample = self.samples[idx - (i + 1)]
+                img, depth, meta = self.read_data(prev_sample)
+
+                handJoints3D = meta['handJoints3D']
+                handJoints3D = handJoints3D.dot(self.coord_change_mat.T) * 1000.
+                handKps = project_3D_points(meta['camMat'], handJoints3D, is_OpenGL_coords=False)
+
+                handKps = handKps[jointsMapManoToSimple]
+                handJoints3D = handJoints3D[jointsMapManoToSimple]
+
+                prev_handKps[i] = handKps
+                prev_handJoints3D[i] = handJoints3D
+
+        extra_handKps = 2 * prev_handKps[0] - prev_handKps[1]
+        extra_handJoints3D = 2 * prev_handJoints3D[0] - prev_handJoints3D[1]
+
+        del_u, del_v, del_z, cell = self.control_to_target(extra_handKps, extra_handJoints3D)
+        # hand pose tensor
+        # index + del, with positional encoding
+        del_u = torch.unsqueeze(torch.from_numpy(del_u), 0).type(torch.float32)
+        del_v = torch.unsqueeze(torch.from_numpy(del_v), 0).type(torch.float32)
+        del_z = torch.unsqueeze(torch.from_numpy(del_z), 0).type(torch.float32)
+
+        enc_cell = self.pos_encoder[:, cell[0], cell[1], cell[2], :].type(torch.float32)
+
+        extra_hand_pose = torch.cat((enc_cell, del_u, del_v, del_z), 0) # tensor (4, 21)
+
+        return image, true_hand_pose, hand_mask, true_object_pose, object_mask, param_vis, vis, extra_hand_pose
+
+
+    def load_objects(self, obj_root):
+        object_names = ['juice', 'liquid_soap', 'milk', 'salt']
+        all_models = {}
+        for obj_name in object_names:
+            obj_path = os.path.join(obj_root, '{}_model'.format(obj_name),
+                                    '{}_model.ply'.format(obj_name))
+            mesh = trimesh.load(obj_path)
+            corners = trimesh.bounds.corners(mesh.bounding_box.bounds)
+            all_models[obj_name] = {
+                'corners': corners
+            }
+        return all_models
+
+    def get_skeleton(self, sample, skel_root):
+        skeleton_path = os.path.join(skel_root, sample['subject'],
+                                     sample['action_name'], sample['seq_idx'],
+                                     'skeleton.txt')
+        #print('Loading skeleton from {}'.format(skeleton_path))
+        skeleton_vals = np.loadtxt(skeleton_path)
+        skeleton = skeleton_vals[:, 1:].reshape(skeleton_vals.shape[0], 21,
+                                                -1)[sample['frame_idx']]
+        return skeleton
+
+    def get_object_pose(self, sample, obj_root):
+        seq_path = os.path.join(obj_root, sample['subject'], sample['action_name'],
+                                sample['seq_idx'], 'object_pose.txt')
+        with open(seq_path, 'r') as seq_f:
+            raw_lines = seq_f.readlines()
+        raw_line = raw_lines[sample['frame_idx']]
+        line = raw_line.strip().split(' ')
+        trans_matrix = np.array(line[1:]).astype(np.float32)
+        trans_matrix = trans_matrix.reshape(4, 4).transpose()
+        # print('Loading obj transform from {}'.format(seq_path))
+        return trans_matrix
+
+    def downsample_points(self, points, depth):
+
+        downsample_ratio_x = 640 / 416.
+        downsample_ratio_y = 480 / 416.
+
+        x = points[0] / downsample_ratio_x
+        y = points[1] / downsample_ratio_y
+        z = depth / 10.  # converting to centimeters
+
+        downsampled_x = x / 32
+        downsampled_y = y / 32
+        downsampled_z = z / 15
+
+        return downsampled_x, downsampled_y, downsampled_z
+
+    def upsample_points(self, points, depth):
+
+        downsample_ratio_x = 640 / 416.
+        downsample_ratio_y = 480 / 416.
+
+        u = points[0] * downsample_ratio_x
+        v = points[1] * downsample_ratio_y
+        z = depth * 10.  # converting to millimeters
+
+        return u, v, z
+
+    def get_cell(self, root, depth):
+
+        downsampled_x, downsampled_y, downsampled_z = self.downsample_points(root, depth)
+
+        u = int(downsampled_x)
+        v = int(downsampled_y)
+        z = int(downsampled_z)
+
+        return (u, v, z)
+
+    def compute_offset(self, points, cell):
+
+        points_u, points_v, points_z = points
+        points_u, points_v, points_z = self.downsample_points((points_u, points_v), points_z)
+        cell_u, cell_v, cell_z = cell
+        del_u = points_u - cell_u
+        del_v = points_v - cell_v
+        del_z = points_z - cell_z
+
+        return del_u, del_v, del_z
+
+    def get_box_3d_control_points(self, corners):
+
+        # lines (0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4), (0,4), (1,5), (2,6), (3,7)
+
+        edge_01 = (corners[0] + corners[1]) / 2.
+        edge_12 = (corners[1] + corners[2]) / 2.
+        edge_23 = (corners[2] + corners[3]) / 2.
+        edge_30 = (corners[3] + corners[0]) / 2.
+        edge_45 = (corners[4] + corners[5]) / 2.
+        edge_56 = (corners[5] + corners[6]) / 2.
+        edge_67 = (corners[6] + corners[7]) / 2.
+        edge_74 = (corners[7] + corners[4]) / 2.
+        edge_04 = (corners[0] + corners[4]) / 2.
+        edge_15 = (corners[1] + corners[5]) / 2.
+        edge_26 = (corners[2] + corners[6]) / 2.
+        edge_37 = (corners[3] + corners[7]) / 2.
+
+        center = np.mean(corners, axis=0)
+
+        control_points = np.vstack((center, corners,
+                                    edge_01, edge_12, edge_23, edge_30,
+                                    edge_45, edge_56, edge_67, edge_74,
+                                    edge_04, edge_15, edge_26, edge_37))
+
+        return control_points
+
+    def control_to_target(self, projected_points, points):
+        # 2D location : projected_points[0, :]
+        # depth : points[0, 2]
+        root = projected_points[0, :]
+
+        # get location of cell in (13, 13, 5)
+        cell = self.get_cell(root, points[0, 2])
+        u, v, z = cell
+        if u > 12:
+            u = 12
+        if v > 12:
+            v = 12
+        if z > 4:
+            z = 4
+        cell = [u, v, z]
+
+        points = projected_points[:, 0], projected_points[:, 1], points[:, 2]  # px, px, mm
+
+        del_u, del_v, del_z = self.compute_offset(points, cell)
+
+        return del_u, del_v, del_z, cell
+
+    def target_to_control(self, del_u, del_v, del_z, cell):
+
+        u, v, z = cell
+
+        w_u = del_u + u
+        w_v = del_v + v
+        w_z = del_z + z
+
+        w_u, w_v, w_z = self.upsample_points((w_u, w_v), w_z)
+        points = np.vstack((w_u * 32, w_v * 32, np.ones_like(w_u)))
+        y_hat = w_z * 15 * np.linalg.inv(self.camera_intrinsics).dot(points)
+
+        return y_hat.T, points
+
+class HO3D_v2_Dataset(Dataset):
+
+    def __init__(self, mode='train', root='../../dataset/HO3D_V2', cfg='train',loadit=False, shuffle_seq=False):
+        ###
+        # initial setting
+        # 640*480 image to 32*32*5 box
+        # only control depth_discretization parameter(=5) in cfg.yaml
+        ###
+        self.coord_change_mat = np.array([[1., 0., 0.], [0, -1., 0.], [0., 0., -1.]], dtype=np.float32)
+
+        self.name = cfg
+        self.root = root
+        self.loadit = loadit
+        self.mode = mode
+
+        self.transform = transforms.ColorJitter(0.5, 0.5, 0.5)
+        self.normalize = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+
+        # load meshes to memory
+        # object_root = os.path.join(self.root, 'Object_models')
+        # self.objects = self.load_objects(object_root)
+
+        # self.camera_pose = np.array(
+        #     [[0.999988496304, -0.00468848412856, 0.000982563360594, 25.7],
+        #      [0.00469115935266, 0.999985218048, -0.00273845880292, 1.22],
+        #      [-0.000969709653873, 0.00274303671904, 0.99999576807, 3.902],
+        #      [0, 0, 0, 1]])
+
+        self.camera_pose = np.array(
+            [[1., 0., 0., 0.],
+             [0., 1., 0., 0.],
+             [0., 0., 1., 0.],
+             [0, 0, 0, 1]])
+
+        self.camera_intrinsics = np.array([[1395.749023, 0, 935.732544],
+                                           [0, 1395.749268, 540.681030],
+                                           [0, 0, 1]])
+
+        self.depth_intrinsics = np.array([[475.065948, 0, 315.944855],
+                                           [0,  475.065857, 245.287079],
+                                           [0, 0, 1]])
+
+        if not loadit:
+
+            # subjects = [1, 2, 3, 4, 5, 6]
+            # subject = "Subject_1"
+            # subject = os.path.join(root, 'Object_6D_pose_annotation_v1', subject)
+            # actions = os.listdir(subject)
+
+            subject_path = os.path.join(root, mode)
+            subjects = os.listdir(subject_path)
+
+            dataset = dict()
+            dataset['train'] = dict()
+            dataset['test'] = dict()
+
+            for subject in subjects:
+                subject = str(subject)
+
+                dataset['train'][subject] = list()
+                dataset['test'][subject] = list()
+
+                rgb_set = list(os.listdir(os.path.join(root, mode, subject, 'rgb')))
+                frames = len(rgb_set)
+                # random.shuffle(rgb_set)
+
+                data_split = int(frames * 4 / 5) + 1
+
+                for i in range(frames):
+                    if i < data_split:
+                        dataset['train'][subject].append(rgb_set[i])
+                    else:
+                        dataset['test'][subject].append(rgb_set[i])
+
+            print(yaml.dump(dataset))
+
+            modes = ['train', 'test']
+            for i in range(2):
+                self.samples = dict()
+                self.name = modes[i]
+
+                for subject in list(dataset[modes[i]]):
+                    self.samples[subject] = dict()
+
+                    idx = 0
+                    for frame in dataset[modes[i]][subject]:
+                        sample = {
+                            'subject': subject,
+                            'frame_idx': frame[:-4],
+                        }
+                        self.samples[subject][idx] = sample
+                        idx += 1
+
+            #self.clean_data()
+                self.samples = self.samples.values()
+                self.save_samples(modes[i])
+
+        else:
+            self.samples = self.load_samples(mode)
+            ### test meta data has missing annotation, split training dataset and test
+            self.mode = 'train'
+
+
+            self.sample_len = len(self.samples)
+            self.subject_order = np.arange(self.sample_len)
+            if shuffle_seq:
+                np.random.shuffle(self.subject_order)
+                sub_len = int(len(self.subject_order) / 4)
+                self.subject_order = self.subject_order[:sub_len]
+
+            self.samples_reorder = dict()
+            idx = 0
+            for subject in self.subject_order:
+                for k, v in self.samples[subject].items():
+                    self.samples_reorder[idx] = v
+                    idx += 1
+
+            self.samples = self.samples_reorder
+            self.sample_len = len(self.samples)
+
+
+    def load_samples(self, mode):
+        with open('../cfg/HO3D_v2/{}.pkl'.format(self.name), 'rb') as f:
+            samples = pickle.load(f)
+            return samples
+
+    def save_samples(self, mode):
+        with open('../cfg/HO3D_v2/{}.pkl'.format(self.name), 'wb') as f:
+            pickle.dump(list(self.samples), f, pickle.HIGHEST_PROTOCOL)
+
+    def clean_data(self):
+        print("Size beforing cleaning: {}".format(len(self.samples.keys())))
+
+        for key in list(self.samples):
+            try:
+                self.__getitem__(key)
+            except Exception as e:
+                print(e)
+                print("Index failed: {}".format(key))
+                del self.samples[key]
+
+        self.samples = self.samples.values()
+
+        print("Size after cleaning: {}".format(len(self.samples)))
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.preprocess(idx)
+
+    def get_image(self, sample):
+
+        img = self.fetch_image(sample)
+
+        if self.mode == 'train':
+            img = self.transform(img)
+        img = np.asarray(img.resize((416, 416), Image.ANTIALIAS), dtype=np.float32)
+        if img.shape[-1] != 3:
+            img = img[:, :, :-1]
+        #img = np.flip(img, axis=1)
+        img = img / 255.
+        # cv2.imshow("img in dataset", img)
+        # cv2.waitKey(1)
+        img = np.squeeze(np.transpose(img, (2, 0, 1)))
+        return img
+
+    # def get_depth(self, sample):
+    #
+    #     img = self.fetch_depth(sample)
+    #     img_np = np.array(img)
+    #
+    #     if self.mode == 'train':
+    #         img = self.transform(img)
+    #     img = np.asarray(img.resize((416, 416), Image.ANTIALIAS), dtype=np.float32)
+    #     #img = np.flip(img, axis=1)
+    #     img = img / 255.
+    #     # cv2.imshow("img in dataset", img)
+    #     # cv2.waitKey(1)
+    #     img = np.transpose(img, (2, 0, 1))
+    #     return img
+    #
+    # def read_image(self, sample):
+    #     file_name = sample['frame_idx'] + '.png'
+    #     img_path = os.path.join(self.root, self.mode, sample['subject'], 'rgb', file_name)
+    #
+    #     img = cv2.imread(img_path)
+    #     return img
+    #
+    def fetch_image(self, sample):
+        file_name = sample['frame_idx'] + '.png'
+        img_path = os.path.join(self.root, self.mode, sample['subject'], 'rgb', file_name)
+        _assert_exist(img_path)
+
+        img = Image.open(img_path)
+        return img
+    #
+    # def fetch_depth(self, sample):
+    #     file_name = sample['frame_idx'] + '.png'
+    #     img_path = os.path.join(self.root, self.mode, sample['subject'], 'depth', file_name)
+    #     img = Image.open(img_path)
+    #     return img
+
+    def read_data(self, sample):
+
+        file_name = sample['frame_idx'] + '.pkl'
+        meta_path = os.path.join(self.root, self.mode, sample['subject'], 'meta', file_name)
+        with open(meta_path, 'rb') as f:
+            meta = pickle.load(f)
+
+        file_name = sample['frame_idx'] + '.png'
+        img_path = os.path.join(self.root, self.mode, sample['subject'], 'rgb', file_name)
+        _assert_exist(img_path)
+        rgb = cv2.imread(img_path)
+
+        img_path = os.path.join(self.root, self.mode, sample['subject'], 'depth', file_name)
+        _assert_exist(img_path)
+        depth_scale = 0.00012498664727900177
+        depth = cv2.imread(img_path)
+
+        dpt = depth[:, :, 2] + depth[:, :, 1] * 256
+        dpt = dpt * depth_scale
+
+        return rgb, dpt, meta
+
+
+    def preprocess(self, idx):
+        """
+        objTrans: A 3x1 vector representing object translation
+        objRot: A 3x1 vector representing object rotation in axis-angle representation
+        handPose: A 48x1 vector represeting the 3D rotation of the 16 hand joints including the root joint in axis-angle representation. The ordering of the joints follow the MANO model convention (see joint_order.png) and can be directly fed to MANO model.
+        handTrans: A 3x1 vector representing the hand translation
+        handBeta: A 10x1 vector representing the MANO hand shape parameters
+        handJoints3D: A 21x3 matrix representing the 21 3D hand joint locations
+        objCorners3D: A 8x3 matrix representing the 3D bounding box corners of the object
+        objCorners3DRest: A 8x3 matrix representing the 3D bounding box corners of the object before applying the transformation
+        objName: Name of the object as given in YCB dataset
+        objLabel: Object label as given in YCB dataset
+        camMat: Intrinsic camera parameters
+        """
+        #idx = idx % (self.sample_len)
         sample = self.samples[idx]
         img, depth, meta = self.read_data(sample)
+        subject = sample['subject']
 
         depth_proc = np.copy(depth)
         depth_proc[depth > 1.0] = 0.0
@@ -290,7 +822,7 @@ class HO3D_v2_Dataset(Dataset):
 
         # imgAnno = showHandJoints_vis(img, handKps, vis=visible)
         # depthAnno = showHandJoints(depth_proc, handKps)
-
+        #
         # imgAnno = showHandJoints(img, handKps)
         # # imgAnno = showObjJoints(imgAnno, objKps, lineThickness=2)
         # rgb = img[:, :, [0, 1, 2]]
@@ -319,7 +851,6 @@ class HO3D_v2_Dataset(Dataset):
         # object mask
         object_mask = torch.zeros(5, 13, 13, dtype=torch.float32)
         object_mask[z, v, u] = 1
-
 
         del_u, del_v, del_z, cell = self.control_to_target(handKps, handJoints3D)
 
@@ -358,7 +889,7 @@ class HO3D_v2_Dataset(Dataset):
                 image = image[:-1, :, :]
             image = self.normalize(image)
 
-        return image, true_hand_pose, hand_mask, true_object_pose, object_mask, param_vis #, meta
+        return image, true_hand_pose, hand_mask, true_object_pose, object_mask, param_vis, subject, vis
 
     def load_objects(self, obj_root):
         object_names = ['juice', 'liquid_soap', 'milk', 'salt']
@@ -491,11 +1022,7 @@ class HO3D_v2_Dataset(Dataset):
         w_z = del_z + z
 
         w_u, w_v, w_z = self.upsample_points((w_u, w_v), w_z)
-
-        ones = np.ones((21, 1), dtype=np.float32)
-
         points = np.vstack((w_u * 32, w_v * 32, np.ones_like(w_u)))
-
         y_hat = w_z * 15 * np.linalg.inv(self.camera_intrinsics).dot(points)
 
         return y_hat.T, points
