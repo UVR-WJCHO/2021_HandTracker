@@ -15,7 +15,6 @@ from open3d import io as io
 from cfg import parameters
 from net import UnifiedNetwork_update, UnifiedNetwork_v2
 from dataset import HO3D_v2_Dataset_update
-from util import extrapolation
 
 from vis_utils.vis_utils import *
 import IKNet.config as config
@@ -36,9 +35,8 @@ if __name__ == '__main__':
 
     flag_extra = False
 
-    model_FCN_name = '../models/FCN_HO3D_08013_extra.pth'
+    model_FCN_name = '../models/FCN_HO3D_0813_extra_flip.pth'
     HAND_MESH_MODEL_PATH = './IKNet/IKmodel/hand_mesh/hand_mesh_model.pkl'
-
     # dataset pkl are aligned
     # To shuffle the dataset w.r.t subject : set shuffle_seq=True
     # To shuffle the dataset totally : set shuffle=True in DataLoader
@@ -51,6 +49,8 @@ if __name__ == '__main__':
     # initial training dataset is randomized
     training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D, batch_size=parameters.batch_size, shuffle=True,
                                                       num_workers=4)
+    # training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D, batch_size=1,
+    #                                                   shuffle=True, num_workers=1)
 
     device = torch.device('cuda:0')
 
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     model = UnifiedNetwork_v2()
     #model.load_state_dict(torch.load('../models/unified_net_addextra.pth', map_location=str(device)), strict=False)
 
-    param_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    #param_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # 590540477
     assert (torch.cuda.is_available())
 
@@ -73,7 +73,7 @@ if __name__ == '__main__':
     optimizer_FCN = torch.optim.Adam(model.parameters(), lr=lr_FCN)
     best_loss = float('inf')
 
-    epoch_range = 50    #parameters.epochs
+    epoch_range = 100    #parameters.epochs
     if continue_train:
         epoch_range -= load_epoch
 
@@ -97,12 +97,12 @@ if __name__ == '__main__':
                 flag_extra = False
 
         for batch, data in enumerate(tqdm(training_dataloader)):
-            #t1 = time.time()
+            # t1 = time.time()
             optimizer_FCN.zero_grad()
 
             image = data[0]
-            if torch.isnan(image).any():
-                raise ValueError('Image error')
+            # if torch.isnan(image).any():
+            #     raise ValueError('Image error')
 
             true = [x.cuda() for x in data[1:-2]]
 
@@ -176,6 +176,8 @@ if __name__ == '__main__':
             #writer.add_scalars('data/loss', {'val_loss : ': validation_loss}, epoch)
             print("Epoch : {} finished. Validation Loss_FCN: {}, Loss_IK".format(epoch, validation_loss_FCN, validation_loss_IK))
             """
+            if epoch % 20 == 0:
+                model_FCN_name_ = model_FCN_name[:-4] + '_' + str(epoch) + 'epoch.pth'
             torch.save(model.state_dict(), model_FCN_name)
             # torch.save(IKNet.iknet.state_dict(), model_IKNet_name)
             print("model saved")

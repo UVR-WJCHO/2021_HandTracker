@@ -116,7 +116,7 @@ if __name__ == '__main__':
             if not flag_detNet:
                 pred = model(image.cuda())
                 loss = model.total_loss(pred, true)
-            """
+
             pred_hand_pose, pred_action_prob, pred_hand_conf, pred_object_pose, pred_object_prob, pred_object_conf = [p.data.cpu().numpy() for p in pred]
             true_hand_pose, true_action_prob, hand_mask, true_object_pose, true_object_prob, object_mask = [t.data.cpu().numpy() for t in true]
 
@@ -149,7 +149,7 @@ if __name__ == '__main__':
 
             if object_detected:
                 object_counter += int(np.argmax(pred_object_prob[0, :, z, v, u]) == true_object_prob[0, z, v, u])
-            """
+
             ############################ IKNet ############################
             if not flag_detNet:
                 hand_points, xy_points = extract_handkeypoint(pred, true)

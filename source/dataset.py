@@ -34,7 +34,7 @@ jointsMapManoToSimple = [0,
 
 class HO3D_v2_Dataset_update(Dataset):
 
-    def __init__(self, mode='train', root='../../dataset/HO3D_V2', cfg='train',loadit=False):
+    def __init__(self, mode='train', root='../../dataset/HO3D_V2', cfg='train', loadit=False):
         ###
         # initial setting
         # 640*480 image to 32*32*5 box
@@ -77,6 +77,9 @@ class HO3D_v2_Dataset_update(Dataset):
         p_enc_3d = PositionalEncoding3D(21)
         z = torch.zeros((1, 13, 13, 5, 21))
         self.pos_encoder = p_enc_3d(z)
+
+        self.prev_frame_idx = 0
+        self.counting_idx = 0
 
         if not loadit:
 
@@ -135,8 +138,9 @@ class HO3D_v2_Dataset_update(Dataset):
 
         else:
             self.samples = self.load_samples(mode)
-            ### test meta data has missing annotation, split training dataset and test
-            self.mode = 'train'
+
+            ### test meta data has missing annotation, only acquire images in 'train' folder ###
+            #self.mode = 'train'
 
             self.sample_len = len(self.samples)
             self.subject_order = np.arange(self.sample_len)
@@ -182,20 +186,23 @@ class HO3D_v2_Dataset_update(Dataset):
     def __getitem__(self, idx):
         return self.preprocess(idx)
 
-    def get_image(self, sample):
-
+    def get_image(self, sample, flag_set):
         img = self.fetch_image(sample)
-
-        if self.mode == 'train':
-            img = self.transform(img)
+        img = self.transform(img)
         img = np.asarray(img.resize((416, 416), Image.ANTIALIAS), dtype=np.float32)
         if img.shape[-1] != 3:
             img = img[:, :, :-1]
-        #img = np.flip(img, axis=1)
+
+        if flag_set[0]:
+            img = np.flip(img, axis=0)
+        if flag_set[1]:
+            img = np.flip(img, axis=1)
+
         img = img / 255.
         # cv2.imshow("img in dataset", img)
-        # cv2.waitKey(1)
+        # cv2.waitKey(0)
         img = np.squeeze(np.transpose(img, (2, 0, 1)))
+
         return img
 
     # def get_depth(self, sample):
@@ -222,7 +229,7 @@ class HO3D_v2_Dataset_update(Dataset):
     #
     def fetch_image(self, sample):
         file_name = sample['frame_idx'] + '.png'
-        img_path = os.path.join(self.root, self.mode, sample['subject'], 'rgb', file_name)
+        img_path = os.path.join(self.root, 'train', sample['subject'], 'rgb', file_name)
         _assert_exist(img_path)
 
         img = Image.open(img_path)
@@ -237,16 +244,16 @@ class HO3D_v2_Dataset_update(Dataset):
     def read_data(self, sample):
 
         file_name = sample['frame_idx'] + '.pkl'
-        meta_path = os.path.join(self.root, self.mode, sample['subject'], 'meta', file_name)
+        meta_path = os.path.join(self.root, 'train', sample['subject'], 'meta', file_name)
         with open(meta_path, 'rb') as f:
             meta = pickle.load(f)
 
         file_name = sample['frame_idx'] + '.png'
-        img_path = os.path.join(self.root, self.mode, sample['subject'], 'rgb', file_name)
+        img_path = os.path.join(self.root, 'train', sample['subject'], 'rgb', file_name)
         _assert_exist(img_path)
         rgb = cv2.imread(img_path)
 
-        img_path = os.path.join(self.root, self.mode, sample['subject'], 'depth', file_name)
+        img_path = os.path.join(self.root, 'train', sample['subject'], 'depth', file_name)
         _assert_exist(img_path)
         depth_scale = 0.00012498664727900177
         depth = cv2.imread(img_path)
@@ -289,32 +296,71 @@ class HO3D_v2_Dataset_update(Dataset):
         handJoints3D = handJoints3D.dot(self.coord_change_mat.T) * 1000.
         handKps = project_3D_points(meta['camMat'], handJoints3D, is_OpenGL_coords=False)
 
-        handKps = handKps[jointsMapManoToSimple]
-        handJoints3D = handJoints3D[jointsMapManoToSimple]
-
-        handKps_ = np.round(handKps).astype(np.int)
+        handKps_ = handKps[jointsMapManoToSimple]
+        handJoints3D_ = handJoints3D[jointsMapManoToSimple]
+        handKps_ = np.round(handKps_).astype(np.int)
         visible = []
         for i in range(21):
             if handKps_[i][0] >= 640 or handKps_[i][1] >= 480:
                 continue
             d_img = depth[handKps_[i][1], handKps_[i][0]]
-            d_gt = handJoints3D[i][-1]
+            d_gt = handJoints3D_[i][-1]
             if np.abs(d_img - d_gt) < 0.04:
                 visible.append(i)
-
+        """
         # depth_proc = np.copy(depth)
         # depth_proc[depth > 1.0] = 0.0
-        # imgAnno = showHandJoints_vis(img, handKps, vis=visible)
         # depthAnno = showHandJoints(depth_proc, handKps)
-        #
-        # #imgAnno = showHandJoints(img, handKps)
-        # # imgAnno = showObjJoints(imgAnno, objKps, lineThickness=2)
-        # rgb = img[:, :, [0, 1, 2]]
-        # cv2.imshow("rgb", rgb)
-        # anno = imgAnno[:, :, [0, 1, 2]]
-        # cv2.imshow("anno", anno)
+        imgAnno = showHandJoints_vis(img, handKps, vis=visible)
+        # imgAnno = showHandJoints(img, handKps)
+        # imgAnno = showObjJoints(imgAnno, objKps, lineThickness=2)
+        rgb = img[:, :, [0, 1, 2]]
+        cv2.imshow("rgb", rgb)
+        anno = imgAnno[:, :, [0, 1, 2]]
+        cv2.imshow("anno", anno)
         # cv2.imshow("depthAnno", depthAnno)
-        # cv2.waitKey(0)
+        cv2.waitKey(1)
+
+        handJoints3D_vert = np.zeros((21, 3), dtype=np.float64)
+        handJoints3D_vert[:, 1] = handJoints3D[:, 1] * -1
+        handJoints3D_vert[:, 0] = handJoints3D[:, 0]
+        handJoints3D_vert[:, -1] = handJoints3D[:, -1]
+        handKps_vert = project_3D_points(meta['camMat'], handJoints3D_vert, is_OpenGL_coords=False)
+
+        img = np.flip(img, axis=0)
+        imgAnno = showHandJoints_vis(img, handKps_vert, vis=visible)
+        # imgAnno = showHandJoints(img, handKps)
+        # imgAnno = showObjJoints(imgAnno, objKps, lineThickness=2)
+        rgb = img[:, :, [0, 1, 2]]
+        cv2.imshow("rgb_vert", rgb)
+        anno = imgAnno[:, :, [0, 1, 2]]
+        cv2.imshow("anno_vert", anno)
+        cv2.waitKey(0)
+        """
+        ### data augmentation ###
+
+        flag_vert = np.random.randint(2)
+        flag_hori = np.random.randint(2)
+        flag_set = [flag_vert, flag_hori]
+
+        handJoints3D_flip = np.copy(handJoints3D)
+        objcontrolPoints_flip = np.copy(objcontrolPoints)
+        if flag_vert:
+            handJoints3D_flip[:, 1] = handJoints3D[:, 1] * -1
+            objcontrolPoints_flip[:, 1] = objcontrolPoints[:, 1] * -1
+
+        if flag_hori:
+            handJoints3D_flip[:, 0] = handJoints3D[:, 0] * -1
+            objcontrolPoints_flip[:, 0] = objcontrolPoints[:, 0] * -1
+
+        objcontrolPoints = objcontrolPoints_flip
+        handJoints3D = handJoints3D_flip
+
+        handKps = project_3D_points(meta['camMat'], handJoints3D, is_OpenGL_coords=False)
+        handKps = handKps[jointsMapManoToSimple]
+        handJoints3D = handJoints3D[jointsMapManoToSimple]
+
+        objKps = project_3D_points(meta['camMat'], objcontrolPoints, is_OpenGL_coords=False)
 
         ### object pose ###
         # get offset w.r.t top/left corner of the cell
@@ -356,52 +402,77 @@ class HO3D_v2_Dataset_update(Dataset):
         image = None
 
         if self.loadit:
-            image = torch.from_numpy(self.get_image(sample))
+            image = torch.from_numpy(self.get_image(sample, flag_set))
             if int(image.shape[0]) != 3:
-                print("image shpae wrong")
+                print("image shape wrong")
                 image = image[:-1, :, :]
             image = self.normalize(image)
 
         ### preprocess extrapolated keypoint GT ###
-        prev_handKps = dict()
-        prev_handJoints3D = dict()
-        if frame_idx < 2:
-            for i in range(2):
-                handKps = np.zeros((21, 2), dtype=np.float32)
-                handJoints3D = np.zeros((21, 3), dtype=np.float32)
+        if self.mode == 'train':
+            prev_handKps = dict()
+            prev_handJoints3D = dict()
 
-                prev_handKps[i] = handKps
-                prev_handJoints3D[i] = handJoints3D
+            if np.abs(frame_idx - self.prev_frame_idx) > 2:
+                self.counting_idx = 0
+
+            self.prev_frame_idx = frame_idx
+
+            if self.counting_idx < 2:
+                self.counting_idx += 1
+
+                for i in range(2):
+                    prev_handKps[i] = np.zeros((21, 2), dtype=np.float32)
+                    prev_handJoints3D[i] = np.zeros((21, 3), dtype=np.float32)
+            else:
+                for i in range(2):
+                    prev_sample = self.samples[idx - (i + 1)]
+                    img, depth, meta = self.read_data(prev_sample)
+
+                    handJoints3D = meta['handJoints3D']
+                    handJoints3D = handJoints3D.dot(self.coord_change_mat.T) * 1000.
+
+                    handJoints3D_flip = np.copy(handJoints3D)
+                    if flag_vert:
+                        handJoints3D_flip[:, 1] = handJoints3D[:, 1] * -1
+                    if flag_hori:
+                        handJoints3D_flip[:, 0] = handJoints3D[:, 0] * -1
+
+                    handJoints3D = handJoints3D_flip
+
+                    handKps = project_3D_points(meta['camMat'], handJoints3D, is_OpenGL_coords=False)
+
+                    handKps = handKps[jointsMapManoToSimple]
+                    handJoints3D = handJoints3D[jointsMapManoToSimple]
+
+                    prev_handKps[i] = handKps
+                    prev_handJoints3D[i] = handJoints3D
+
+            extra_handKps = 2 * prev_handKps[0] - prev_handKps[1]
+            extra_handJoints3D = 2 * prev_handJoints3D[0] - prev_handJoints3D[1]
+
+            del_u, del_v, del_z, cell = self.control_to_target(extra_handKps, extra_handJoints3D)
+            # hand pose tensor
+            # index + del, with positional encoding
+            del_u = torch.unsqueeze(torch.from_numpy(del_u), 0).type(torch.float32)
+            del_v = torch.unsqueeze(torch.from_numpy(del_v), 0).type(torch.float32)
+            del_z = torch.unsqueeze(torch.from_numpy(del_z), 0).type(torch.float32)
+
+            enc_cell = self.pos_encoder[:, cell[0], cell[1], cell[2], :].type(torch.float32)
+
+            extra_hand_pose = torch.cat((enc_cell, del_u, del_v, del_z), 0) # tensor (4, 21)
+
+            return image, true_hand_pose, hand_mask, true_object_pose, object_mask, param_vis, vis, extra_hand_pose
+
         else:
-            for i in range(2):
-                prev_sample = self.samples[idx - (i + 1)]
-                img, depth, meta = self.read_data(prev_sample)
+            if np.abs(frame_idx - self.prev_frame_idx) > 2:
+                flag_seq = True
+            else:
+                flag_seq = False
 
-                handJoints3D = meta['handJoints3D']
-                handJoints3D = handJoints3D.dot(self.coord_change_mat.T) * 1000.
-                handKps = project_3D_points(meta['camMat'], handJoints3D, is_OpenGL_coords=False)
+            self.prev_frame_idx = frame_idx
 
-                handKps = handKps[jointsMapManoToSimple]
-                handJoints3D = handJoints3D[jointsMapManoToSimple]
-
-                prev_handKps[i] = handKps
-                prev_handJoints3D[i] = handJoints3D
-
-        extra_handKps = 2 * prev_handKps[0] - prev_handKps[1]
-        extra_handJoints3D = 2 * prev_handJoints3D[0] - prev_handJoints3D[1]
-
-        del_u, del_v, del_z, cell = self.control_to_target(extra_handKps, extra_handJoints3D)
-        # hand pose tensor
-        # index + del, with positional encoding
-        del_u = torch.unsqueeze(torch.from_numpy(del_u), 0).type(torch.float32)
-        del_v = torch.unsqueeze(torch.from_numpy(del_v), 0).type(torch.float32)
-        del_z = torch.unsqueeze(torch.from_numpy(del_z), 0).type(torch.float32)
-
-        enc_cell = self.pos_encoder[:, cell[0], cell[1], cell[2], :].type(torch.float32)
-
-        extra_hand_pose = torch.cat((enc_cell, del_u, del_v, del_z), 0) # tensor (4, 21)
-
-        return image, true_hand_pose, hand_mask, true_object_pose, object_mask, param_vis, vis, extra_hand_pose
+            return image, true_hand_pose, hand_mask, true_object_pose, object_mask, param_vis, vis, flag_seq
 
 
     def load_objects(self, obj_root):
@@ -547,6 +618,7 @@ class HO3D_v2_Dataset_update(Dataset):
         y_hat = w_z * 15 * np.linalg.inv(self.camera_intrinsics).dot(points)
 
         return y_hat.T, points
+
 
 class HO3D_v2_Dataset(Dataset):
 
