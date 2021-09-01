@@ -164,7 +164,6 @@ class UnifiedNetwork_v2(nn.Module):
         total_pose_loss = self.pose_loss(pred_hand_pose, true_hand_pose, hand_mask) + self.pose_loss(pred_object_pose,
                                                                                                      true_object_pose,
                                                                                                      object_mask)
-        total_pose_loss *= 2.
 
         total_conf_loss = self.conf_loss(pred_hand_conf, pred_hand_pose, true_hand_pose, hand_mask) + self.conf_loss(
             pred_object_conf, pred_object_pose, true_object_pose, object_mask)
