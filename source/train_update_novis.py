@@ -36,7 +36,7 @@ if __name__ == '__main__':
 
     flag_extra = False
 
-    model_FCN_name = '../models/FCN_HO3D_0906_noextra.pth'
+    model_FCN_name = '../models/FCN_HO3D_0906_novis.pth'
 
     load_model_FCN_name = '../models/___.pth'
     HAND_MESH_MODEL_PATH = './IKNet/IKmodel/hand_mesh/hand_mesh_model.pkl'
@@ -56,7 +56,7 @@ if __name__ == '__main__':
     device = torch.device('cuda:0')
 
     # model = UnifiedNetwork_v2()
-    model = UnifiedNetwork_v2_noExtra()
+    model = UnifiedNetwork_v2_noVis()
     #model.load_state_dict(torch.load('../models/unified_net_addextra.pth', map_location=str(device)), strict=False)
 
     param_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -107,7 +107,7 @@ if __name__ == '__main__':
             image = data[0]
             # if torch.isnan(image).any():
             #     raise ValueError('Image error')
-            true = [x.cuda() for x in data[1:-2]]
+            true = [x.cuda() for x in data[1:-3]]   # -2 for noExtra, -3 for noVis
 
             ############################ FCN ############################
             if flag_extra:
@@ -134,10 +134,9 @@ if __name__ == '__main__':
             with torch.no_grad():
                 for batch, data in enumerate(tqdm(validating_dataloader)):
                     image = data[0]
-                    true = [x.cuda() for x in data[1:-2]]
+                    true = [x.cuda() for x in data[1:-3]]
                     # extra = data[-1]
                     # pred = model(image.cuda(), extra.cuda())
-
                     pred = model(image.cuda())
                     loss = model.total_loss(pred, true)
 

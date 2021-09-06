@@ -13,8 +13,8 @@ from einops import rearrange
 from open3d import io as io
 
 from cfg import parameters
-from net import UnifiedNetwork_v2, UnifiedNetwork_v2_noExtra, UnifiedNetwork_v2_noVis
-from dataset import HO3D_v2_Dataset_update
+from net import UnifiedNetwork_update, UnifiedNetwork_v2
+from dataset import HO3D_v2_Dataset_update, HO3D_v2_Dataset_pickle
 from vis_utils.vis_utils import *
 
 import IKNet.config as config
@@ -30,21 +30,21 @@ from IKNet.capture import OpenCVCapture
 if __name__ == '__main__':
 
 
-    activate_extra = False
-    continue_train = False
-    load_epoch = 0
+    activate_extra = True
+    continue_train = True
+    load_epoch = 20
 
     flag_extra = False
 
-    model_FCN_name = '../models/FCN_HO3D_0906_noextra.pth'
+    model_FCN_name = '../models/FCN_HO3D_0831_wVis_extra.pth'
 
-    load_model_FCN_name = '../models/___.pth'
+    load_model_FCN_name = '../models/FCN_HO3D_0831_wVis_extra_20epoch.pth'
     HAND_MESH_MODEL_PATH = './IKNet/IKmodel/hand_mesh/hand_mesh_model.pkl'
     # dataset pkl are aligned
     # To shuffle the dataset w.r.t subject : set shuffle_seq=True
     # To shuffle the dataset totally : set shuffle=True in DataLoader
-    training_dataset_HO3D = HO3D_v2_Dataset_update(mode='train', cfg='train_small', loadit=True)
-    validating_dataset_HO3D = HO3D_v2_Dataset_update(mode='train', cfg='test_small', loadit=True)
+    training_dataset_HO3D = HO3D_v2_Dataset_pickle(mode='train', cfg='train', loadit=True)
+    validating_dataset_HO3D = HO3D_v2_Dataset_pickle(mode='train', cfg='test', loadit=True)
 
     # initial training dataset is randomized
     training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D, batch_size=parameters.batch_size, shuffle=True,
@@ -55,13 +55,11 @@ if __name__ == '__main__':
 
     device = torch.device('cuda:0')
 
-    # model = UnifiedNetwork_v2()
-    model = UnifiedNetwork_v2_noExtra()
+    model = UnifiedNetwork_v2()
     #model.load_state_dict(torch.load('../models/unified_net_addextra.pth', map_location=str(device)), strict=False)
 
-    param_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("param num : ", param_num)
-
+    #param_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # 590540477
     assert (torch.cuda.is_available())
 
     if continue_train:
@@ -107,9 +105,8 @@ if __name__ == '__main__':
             image = data[0]
             # if torch.isnan(image).any():
             #     raise ValueError('Image error')
-            true = [x.cuda() for x in data[1:-2]]
+            true = [x.cuda() for x in data[1:-1]]
 
-            ############################ FCN ############################
             if flag_extra:
                 extra = data[-1]
 
@@ -128,17 +125,18 @@ if __name__ == '__main__':
         print("Epoch : {} finished. Training loss: {}.".format(epoch, training_loss))
 
         # validation and save model
-        if epoch != 0 and epoch % 5 == 0:
+        if epoch != 0 and epoch % 10 == 0:
             validation_loss = 0.
 
             with torch.no_grad():
                 for batch, data in enumerate(tqdm(validating_dataloader)):
                     image = data[0]
-                    true = [x.cuda() for x in data[1:-2]]
-                    # extra = data[-1]
-                    # pred = model(image.cuda(), extra.cuda())
+                    # if torch.isnan(image).any():
+                    #     raise ValueError('Image error')
+                    true = [x.cuda() for x in data[1:-1]]
 
-                    pred = model(image.cuda())
+                    extra = data[-1]
+                    pred = model(image.cuda(), extra.cuda())
                     loss = model.total_loss(pred, true)
 
                     validation_loss += loss.data.detach().cpu().numpy()
