@@ -2,7 +2,7 @@ import numpy as np
 from transforms3d.quaternions import quat2mat
 
 import sys
-sys.path.append("./IKNet/")
+sys.path.append("C:/Research/2021_HandTracker/source/IKNet/")
 from config import *
 from kinematics import *
 from utils import *
@@ -52,8 +52,8 @@ class HandMesh():
     self.ref_pose_tensor = torch.tensor(self.ref_pose, dtype=torch.float32).cuda()
 
     self.ref_T = np.expand_dims(np.stack(self.ref_T, 1), -1)
-    
-  
+
+
   def set_abs_quat(self, quat):
     """
     Set absolute (global) rotation for the hand.

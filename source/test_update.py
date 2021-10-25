@@ -5,6 +5,7 @@ warnings.filterwarnings("ignore")
 import sys
 sys.path.append("./IKNet/")
 
+import argparse
 import time
 import torch
 import cv2
@@ -12,8 +13,8 @@ from tqdm import tqdm
 import numpy as np
 from cfg import parameters
 
-from net import UnifiedNetwork_update, UnifiedNetwork_v2
-from dataset import UnifiedPoseDataset, HO3D_v2_Dataset, HO3D_v2_Dataset_update
+from net import *
+from dataset import HO3D_v2_Dataset
 from vis_utils.vis_utils import *
 
 import IKNet.config as config
@@ -30,24 +31,52 @@ from IKNet.capture import OpenCVCapture
 from positional_encodings import PositionalEncoding1D, PositionalEncoding2D, PositionalEncoding3D
 
 
+def _log_loss(args, init=False):
+    if init:
+        log_name = '../models/log_test_' + args['load_model'] + '_loss.txt'
+        with open(log_name, mode='wt', encoding='utf-8') as f:
+            f.write('[Loss log]\n')
+        return log_name
+
+
 if __name__ == '__main__':
-    activate_extra = True
-    flag_IKNet = False
 
-    load_FCN_name = '../models/FCN_HO3D_0813_extra_flip.pth'
-    #load_IKNet_name = '../models/backup_iknet.pth'
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-load_model", required=False, type=str, default='FCN_1022_total')
+    ap.add_argument("-iknet", required=False, type=bool, default=False, help="activate iknet")
+    ap.add_argument("-load_GT", required=False, type=bool, default=True, help="load GT extrapolation")
+    ap.add_argument("-extra", required=False, type=bool, default=True,
+                    help="activate extrapolation")  # action='store_true'
 
-    # dataset pkl are aligned
-    # To shuffle the dataset w.r.t subject : set shuffle_seq=True
-    # To shuffle the dataset totally : set shuffle=True in DataLoader
-    testing_dataset_HO3D = HO3D_v2_Dataset_update(mode='test', cfg='test', loadit=True)
+    ap.add_argument("-num_worker", required=False, type=int, default=4)
+    ap.add_argument("-augment", required=False, type=bool, default=True, help="activate augmentation")
+    ap.add_argument("-res34", required=False, type=bool, default=True, help="use res34 backbone")
+    ap.add_argument("-lowerdim", required=False, type=bool, default=True, help="concatenate extra feature on lower part of network")
+
+    args = vars(ap.parse_args())
+
+    log_output_name = _log_loss(args, init=True)
+
+    ############## Load dataset and set dataloader ##############
+    testing_dataset_HO3D = HO3D_v2_Dataset(mode='test', cfg='test', loadit=True, augment=False, extra=args['extra'])
     # training_dataset = UnifiedPoseDataset(mode='train', loadit=True, name='train')
-    testing_dataloader = torch.utils.data.DataLoader(testing_dataset_HO3D, batch_size=1,
-                                                      shuffle=False,
-                                                      num_workers=1)
+    testing_dataloader = torch.utils.data.DataLoader(testing_dataset_HO3D, batch_size=1, shuffle=False, num_workers=args['num_worker'])
 
-    model = UnifiedNetwork_v2()
-    model.load_state_dict(torch.load(load_FCN_name), strict=False)
+    ############## Set model and training parameters ##############
+    device = torch.device('cuda:0')
+    if args['res34']:
+        model = UnifiedNet_res34()
+        if args['lowerdim']:
+            model = UnifiedNet_res34_lowconcat()
+    else:
+        model = UnifiedNet_res18()
+        if args['lowerdim']:
+            model = UnifiedNet_res18_lowconcat()
+
+    assert args['load_model'] is not None, 'need model name to load'
+
+    model_load_name = '../models/' + args['load_model'] + '.pth'
+    model.load_state_dict(torch.load(model_load_name), strict=False)
     model.eval()
     model.cuda()
 
@@ -55,7 +84,8 @@ if __name__ == '__main__':
     z = torch.zeros((1, 13, 13, 5, 21))
     pos_encoder = p_enc_3d(z)
 
-    if flag_IKNet:
+
+    if args['iknet']:
         render = o3d_render(config.HAND_MESH_MODEL_PATH)
         extrinsic = render.extrinsic
         extrinsic[0:3, 3] = 0
@@ -70,6 +100,9 @@ if __name__ == '__main__':
         IKNet.cuda()
         IKNet.eval()
 
+    print("...testing HO3D")
+    model.update_parameter(img_width=640., img_height=480.)
+    model.check_status()
     with torch.no_grad():
         total_loss = 0.
         err_3D_total = 0.
@@ -84,44 +117,52 @@ if __name__ == '__main__':
 
         outlier_count = 0
         counting_idx = 0
+
         for batch, data in enumerate(tqdm(testing_dataloader)):
             image = data[0]
             if torch.isnan(image).any():
                 raise ValueError('Image error')
             true = [x.cuda() for x in data[1:-2]]
-            flag_seq = data[-1]
 
-            if flag_seq:
-                counting_idx = 0
-
-            if activate_extra:
-                if counting_idx < 2:
-                    counting_idx += 1
-
-                    extra_handKps = np.zeros((21, 2), dtype=np.float32)
-                    extra_handJoints3D = np.zeros((21, 3), dtype=np.float32)
-
+            if args['load_GT']:
+                if args['extra']:
+                    extra = data[-1]
+                    pred = model(image.cuda(), extra.cuda())
                 else:
-                    extra_handKps = 2 * prev_handKps_1 - prev_handKps_2
-                    extra_handJoints3D = 2 * prev_handJoints3D_1 - prev_handJoints3D_2
-
-                del_u, del_v, del_z, cell = testing_dataset_HO3D.control_to_target(extra_handKps, extra_handJoints3D)
-                # hand pose tensor
-                # index + del, with positional encoding
-                del_u = torch.unsqueeze(torch.from_numpy(del_u), 0).type(torch.float32)
-                del_v = torch.unsqueeze(torch.from_numpy(del_v), 0).type(torch.float32)
-                del_z = torch.unsqueeze(torch.from_numpy(del_z), 0).type(torch.float32)
-
-                enc_cell = pos_encoder[:, cell[0], cell[1], cell[2], :].type(torch.float32)
-                extra_hand_pose = torch.cat((enc_cell, del_u, del_v, del_z), 0)
-                # extra_hand_pose = data[-1]
-
-                pred = model(image.cuda(), extra_hand_pose.cuda())
+                    pred = model(image.cuda())
 
             else:
-                #t1 = time.time()
-                pred = model(image.cuda())
-                #print("time : ", time.time() - t1)
+                flag_seq = data[-1]
+
+                if flag_seq:
+                    counting_idx = 0
+
+                if args['extra']:
+                    if counting_idx < 2:
+                        counting_idx += 1
+
+                        extra_handKps = np.zeros((21, 2), dtype=np.float32)
+                        extra_handJoints3D = np.zeros((21, 3), dtype=np.float32)
+
+                    else:
+                        extra_handKps = 2 * prev_handKps_1 - prev_handKps_2
+                        extra_handJoints3D = 2 * prev_handJoints3D_1 - prev_handJoints3D_2
+
+                    del_u, del_v, del_z, cell = testing_dataset_HO3D.control_to_target(extra_handKps, extra_handJoints3D)
+                    # hand pose tensor
+                    # index + del, with positional encoding
+                    del_u = torch.unsqueeze(torch.from_numpy(del_u), 0).type(torch.float32)
+                    del_v = torch.unsqueeze(torch.from_numpy(del_v), 0).type(torch.float32)
+                    del_z = torch.unsqueeze(torch.from_numpy(del_z), 0).type(torch.float32)
+
+                    enc_cell = pos_encoder[:, cell[0], cell[1], cell[2], :].type(torch.float32)
+                    extra_hand_pose = torch.cat((enc_cell, del_u, del_v, del_z), 0)
+                    # extra_hand_pose = data[-1]
+
+                    pred = model(image.cuda(), extra_hand_pose.cuda())
+
+                else:
+                    pred = model(image.cuda())
 
             loss = model.total_loss(pred, true)
             total_loss += loss.data.cpu().numpy()
@@ -137,7 +178,7 @@ if __name__ == '__main__':
             pred_hand_cell = np.unravel_index(pred_hand_conf.argmax(), pred_hand_conf.shape)
             pred_object_cell = np.unravel_index(pred_object_conf.argmax(), pred_object_conf.shape)
 
-            z, v, u = true_hand_cell[1:]
+            z, v, u = pred_hand_cell[1:]
             dels = pred_hand_pose[0, :, z, v, u].reshape(21, 3)
             del_u, del_v, del_z = dels[:, 0], dels[:, 1], dels[:, 2]
             hand_points, xy_points = testing_dataset_HO3D.target_to_control(del_u, del_v, del_z, (u, v, z))
@@ -181,25 +222,25 @@ if __name__ == '__main__':
             #         visible.append(i)
             #
             # img = testing_dataset_HO3D.fetch_image(testing_dataset_HO3D.samples[batch])
-            #
             # xy_points = np.transpose(xy_points)
-            #
-            # imgAnno = showHandJoints_vis(img, xy_points, visible)   # imgAnno = showHandJoints(img, xy_points)
-            #
+            # imgAnno = showHandJoints(img, xy_points) #showHandJoints_vis(img, xy_points, visible)
             # imgAnno_rgb = imgAnno[:, :, [2, 1, 0]]
-            # imgAnno_rgb = cv2.flip(imgAnno_rgb, 1)
+            # #imgAnno_rgb = cv2.flip(imgAnno_rgb, 1)
             # cv2.imshow("rgb pred", imgAnno_rgb)
-            # cv2.waitKey(1)
+            # cv2.waitKey(0)
 
             ############################ IKNet ############################
-            if flag_IKNet:
+            if args['iknet']:
                 root = hand_points[9, :]
                 hand_points_rel = (root - hand_points) / 100.
+                hand_points_rel[:, 0] *= -1
+                hand_points_rel[:, 2] *= -1
 
                 # check 'hand_points' device
                 xyz = torch.from_numpy(hand_points_rel).cuda()
+                t_a = time.time()
                 _, theta_mpii = IKNet(xyz.float())
-
+                print("time IK : ", time.time() - t_a)
                 theta_mpii = theta_mpii.detach().cpu().numpy()
                 theta_mano = mpii_to_mano(np.squeeze(theta_mpii))
 
@@ -220,10 +261,16 @@ if __name__ == '__main__':
                 cv2.imshow("result", render_img)
                 cv2.waitKey(0)
 
-        print(total_loss * 1. / batch)
-        #print("mse pose err(missing scaling) : ", pose_loss * 1. / (batch - outlier_count))
-        print("3D pose err : ", err_3D_total * 1. / (batch - outlier_count))
-        print("2D pose err : ", err_2D_total * 1. / (batch - outlier_count))
-        print("2D pixel err : ", err_pix_total * 1. / (batch - outlier_count))
-        print("z err : ", err_z_total * 1. / (batch - outlier_count))
-        print("outlier : ", outlier_count)
+        with open(log_output_name, mode='at', encoding='utf-8') as f:
+            log = total_loss * 1. / batch
+            f.writelines(['Test Loss_FCN: ' + str(log) + '\n'])
+            log = err_3D_total * 1. / (batch - outlier_count)
+            f.writelines(['3D pose err : ' + str(log) + '\n'])
+            log = err_2D_total * 1. / (batch - outlier_count)
+            f.writelines(['2D pose err : ' + str(log) + '\n'])
+            log = err_pix_total * 1. / (batch - outlier_count)
+            f.writelines(['2D pixel err : ' + str(log) + '\n'])
+            log = err_z_total * 1. / (batch - outlier_count)
+            f.writelines(['z err : ' + str(log) + '\n'])
+            log = outlier_count
+            f.writelines(['outlier : ' + str(log)])

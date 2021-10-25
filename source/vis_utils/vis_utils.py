@@ -439,6 +439,29 @@ def load_pickle_data(f_name):
 
     return pickle_data
 
+def project_3D_points_withD(cam_mat, pts3D, is_OpenGL_coords=True):
+    '''
+    Function for projecting 3d points to 2d
+    :param camMat: camera matrix
+    :param pts3D: 3D points
+    :param isOpenGLCoords: If True, hand/object along negative z-axis. If False hand/object along positive z-axis
+    :return:
+    '''
+    assert pts3D.shape[-1] == 3
+    assert len(pts3D.shape) == 2
+
+    coord_change_mat = np.array([[1., 0., 0.], [0, -1., 0.], [0., 0., -1.]], dtype=np.float32)
+    if is_OpenGL_coords:
+        pts3D = pts3D.dot(coord_change_mat.T)
+
+    proj_pts = pts3D.dot(cam_mat.T)
+    reproj_d = proj_pts[:, 2]
+    proj_pts = np.stack([proj_pts[:,0]/proj_pts[:,2], proj_pts[:,1]/proj_pts[:,2]],axis=1)
+
+    assert len(proj_pts.shape) == 2
+
+    return proj_pts, reproj_d
+
 def project_3D_points(cam_mat, pts3D, is_OpenGL_coords=True):
     '''
     Function for projecting 3d points to 2d
