@@ -1,3 +1,4 @@
-models/
-source/backup/
-cfg/
+models/*.*
+models/backup/*.*
+source/backup/*.*
+cfg/*.*

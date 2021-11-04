@@ -33,7 +33,7 @@ from positional_encodings import PositionalEncoding1D, PositionalEncoding2D, Pos
 
 def _log_loss(args, init=False):
     if init:
-        log_name = '../models/log_test_' + args['load_model'] + '.txt'
+        log_name = '../models/TEST_' + args['load_model'] + '.txt'
         with open(log_name, mode='wt', encoding='utf-8') as f:
             f.write('[Loss log]\n')
         return log_name
