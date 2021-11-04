@@ -29,14 +29,14 @@ from IKNet.capture import OpenCVCapture
 
 
 def _log_parameters(args):
-    log_name = '../models/log_' + args['model'] + '.txt'
+    log_name = '../models/' + args['model'] + '_param.txt'
     with open(log_name, mode='wt', encoding='utf-8') as f:
         for arg in args:
             f.write(arg + ': ' + str(args[arg]) + '\n')
 
 def _log_loss(args, log_name=None, init=False):
     if init:
-        log_name = '../models/log_' + args['model'] + '_loss.txt'
+        log_name = '../models/' + args['model'] + '_loss.txt'
         with open(log_name, mode='wt', encoding='utf-8') as f:
             f.write('[Loss log]\n')
         return log_name
@@ -48,12 +48,14 @@ def _log_loss(args, log_name=None, init=False):
 if __name__ == '__main__':
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("-model", required=False, type=str, default='FCN_1025_HO3Donly')
+    ap.add_argument("-model", required=False, type=str, default='temp')
     ap.add_argument("-load_model", type=str, default=None)
     ap.add_argument("-continue_train", required=False, type=int, default=0, help="continue train on epoch ~")
-    ap.add_argument("-epoch", required=False, type=int, default=100)
+    ap.add_argument("-epoch", required=False, type=int, default=150)
     ap.add_argument("-lr", required=False, type=float, default=0.0001)
     ap.add_argument("-num_worker", required=False, type=int, default=4)
+
+    ap.add_argument("-small", required=False, type=bool, default=False, help="use small dataset")
 
     ap.add_argument("-extra", required=False, type=bool, default=False, help="activate extrapolation")   # action='store_true'
     ap.add_argument("-augment", required=False, type=bool, default=True, help="activate augmentation")
@@ -61,19 +63,19 @@ if __name__ == '__main__':
     ap.add_argument("-res34", required=False, type=bool, default=False, help="use res34 backbone")
     ap.add_argument("-lowerdim", required=False, type=bool, default=True, help="concatenate extra feature on lower part of network")
 
-    ap.add_argument("-dataset", required=False, choices=['ho3d', 'wfhad', 'wfrei', 'all'], default='ho3d', help="choose dataset option to train")
+    ap.add_argument("-dataset", required=False, choices=['ho3d', 'wfhad', 'wfrei', 'all', 'onlyfrei'], default='ho3d', help="choose dataset option to train")
     args = vars(ap.parse_args())
 
     _log_parameters(args)
-    log_loss_name = _log_loss(args, init=True)
+
     model_name = '../models/' + args['model']
 
     ############## Load dataset and set dataloader ##############
     # training_dataset_HO3D = HO3D_v2_Dataset_before(mode='train', cfg='train', loadit=True, augment=True, extra=args['extra'])
     # validating_dataset_HO3D = HO3D_v2_Dataset_before(mode='train', cfg='test', loadit=True, extra=args['extra'])
 
-    training_dataset_HO3D = HO3D_v2_Dataset(mode='train', cfg='train', loadit=True, augment=True, extra=args['extra'])
-    validating_dataset_HO3D = HO3D_v2_Dataset(mode='train', cfg='test', loadit=True, extra=args['extra'])
+    training_dataset_HO3D = HO3D_v2_Dataset(mode='train', cfg='train', loadit=True, extra=args['extra'], augment=args['augment'], small=args['small'])
+    validating_dataset_HO3D = HO3D_v2_Dataset(mode='train', cfg='test', loadit=True, extra=args['extra'], small=args['small'])
 
     training_dataloader = torch.utils.data.DataLoader(training_dataset_HO3D, batch_size=parameters.batch_size,
                                                       shuffle=True,
@@ -85,14 +87,14 @@ if __name__ == '__main__':
     # FHAD dataset
     if args['dataset'] in ['wfhad', 'all']:
         # currupted rgb img
-        training_dataset_FHAD = FHAD_Dataset(mode='train', cfg='train', loadit=True, augment=True, extra=args['extra'])
+        training_dataset_FHAD = FHAD_Dataset(mode='train', cfg='train', loadit=True, augment=True, extra=args['extra'], small=args['small'])
         training_dataloader_FHAD = torch.utils.data.DataLoader(training_dataset_FHAD, batch_size=parameters.batch_size,
                                                                shuffle=True,
                                                                num_workers=args['num_worker'], pin_memory=True)
     # FreiHAND dataset
-    if args['dataset'] in ['wfrei', 'all']:
+    if args['dataset'] in ['wfrei', 'all', 'onlyfrei']:
         # only rgb, only handpose ~ no visibility & extrapolated feature
-        training_dataset_FreiHAND = FreiHAND_Dataset(mode='train', loadit=True, augment=False)
+        training_dataset_FreiHAND = FreiHAND_Dataset(mode='train', loadit=True, augment=False, small=args['small'])
 
         training_dataloader_FreiHAND = torch.utils.data.DataLoader(training_dataset_FreiHAND, batch_size=parameters.batch_size,
                                                                shuffle=True,
@@ -105,9 +107,13 @@ if __name__ == '__main__':
         if args['lowerdim']:
             model = UnifiedNet_res34_lowconcat()
     else:
-        model = UnifiedNet_res18()
-        if args['lowerdim']:
-            model = UnifiedNet_res18_lowconcat()
+        if not args['extra']:
+            model = UnifiedNet_res18_noextra()
+            print("...training without extra")
+        else:
+            model = UnifiedNet_res18()
+            if args['lowerdim']:
+                model = UnifiedNet_res18_lowconcat()
     net_utils = Network_utils()
     # model.load_state_dict(torch.load('../models/unified_net_addextra.pth', map_location=str(device)), strict=False)
 
@@ -118,10 +124,13 @@ if __name__ == '__main__':
     if args['continue_train'] != 0:
         if args['load_model'] is None:
             args['load_model'] = args['model']
-        model_load_name = '../models/' + args['load_model'] + '_epoch_' + str(args['continue_train']) + '.pth'
+        model_load_name = '../models/' + args['load_model'] + '.pth'
         state_dict = torch.load(model_load_name, map_location=str(device))
         model.load_state_dict(state_dict, strict=False)
         print("load success")
+        log_loss_name = '../models/' + args['model'] + '_loss.txt'
+    else:
+        log_loss_name = _log_loss(args, init=True)
     model.cuda()
 
     lr_FCN = args['lr']
@@ -134,41 +143,71 @@ if __name__ == '__main__':
     model.train()
     for epoch in range(start_epoch, end_epoch):
         ### update learning rate ###
-        if epoch == 60 or epoch == 120:
+        if epoch == 120:
             lr_FCN *= 0.1
             optimizer = torch.optim.Adam(model.parameters(), lr=lr_FCN)
 
-        ### start training HO3D dataset ###
-        print("...training HO3D")
-        model.update_parameter(img_width=640., img_height=480.)
-        model.check_status()
+        ### start training FreiHAND dataset ###
+        if args['dataset'] in ['wfrei', 'all', 'onlyfrei']:
+            print("...training FreiHAND")
+            model.update_parameter(img_width=224., img_height=224.)
+            model.check_status()
 
-        training_loss = 0.
-        t0 = time.time()
-        for batch, data in enumerate(tqdm(training_dataloader)):
-            optimizer.zero_grad()
-            image = data[0]
-            # if torch.isnan(image).any():
-            #     raise ValueError('Image error')
-            true = [x.cuda() for x in data[1:-2]]
+            training_loss = 0.
+            assert training_loss == 0, 'loss initialization error'
+            for batch, data in enumerate(tqdm(training_dataloader_FreiHAND)):
+                # t1 = time.time()
+                optimizer.zero_grad()
 
-            if args['extra']:
-                extra = data[-1]
-                pred = model(image.cuda(), extra.cuda())
-            else:
+                image = data[0]
+                # if torch.isnan(image).any():
+                #     raise ValueError('Image error')
+                true = [x.cuda() for x in data[1:]]
+
                 pred = model(image.cuda())
 
-            loss = model.total_loss(pred, true)
-            loss.backward()
-            optimizer.step()
-            training_loss += loss.detach().cpu().numpy()
-        training_loss = training_loss / batch
-        log_loss = "Epoch : {}. HO3D Training loss: {}.\n".format(epoch, training_loss)
-        _log_loss(log_loss, log_name=log_loss_name)
-        print(log_loss)
+                loss = model.total_loss_FreiHAND(pred, true)
+                loss.backward()
+                optimizer.step()
+                training_loss += loss.data.detach().cpu().numpy()
+            training_loss = training_loss / batch
+            log_loss = "Epoch : {}. FreiHAND Training loss: {}.\n".format(epoch, training_loss)
+            _log_loss(log_loss, log_name=log_loss_name)
+            print(log_loss)
 
+
+        ### start training HO3D dataset ###
+        if args['dataset'] not in ['onlyfrei']:
+            print("...training HO3D")
+            model.update_parameter(img_width=640., img_height=480.)
+            model.check_status()
+
+            training_loss = 0.
+            t0 = time.time()
+            for batch, data in enumerate(tqdm(training_dataloader)):
+                optimizer.zero_grad()
+                image = data[0]
+                # if torch.isnan(image).any():
+                #     raise ValueError('Image error')
+                true = [x.cuda() for x in data[1:-2]]
+
+                if args['extra']:
+                    extra = data[-1]
+                    pred = model(image.cuda(), extra.cuda())
+                else:
+                    pred = model(image.cuda())
+
+                loss = model.total_loss(pred, true)
+                loss.backward()
+                optimizer.step()
+                training_loss += loss.detach().cpu().numpy()
+            training_loss = training_loss / batch
+            log_loss = "Epoch : {}. HO3D Training loss: {}.\n".format(epoch, training_loss)
+            _log_loss(log_loss, log_name=log_loss_name)
+            print(log_loss)
+
+        ### start training FHAD dataset ###
         if args['dataset'] in ['wfhad', 'all']:
-            ### start training FHAD dataset ###
             print("...training FHAD")
             model.update_parameter(img_width=1920., img_height=1080.)
             model.check_status()
@@ -199,34 +238,6 @@ if __name__ == '__main__':
             _log_loss(log_loss, log_name=log_loss_name)
             print(log_loss)
 
-        if args['dataset'] in ['wfrei', 'all']:
-            ### start training FreiHAND dataset ###
-            print("...training FreiHAND")
-            model.update_parameter(img_width=224., img_height=224.)
-            model.check_status()
-
-            training_loss = 0.
-            assert training_loss == 0, 'loss initialization error'
-            for batch, data in enumerate(tqdm(training_dataloader_FreiHAND)):
-                # t1 = time.time()
-                optimizer.zero_grad()
-
-                image = data[0]
-                # if torch.isnan(image).any():
-                #     raise ValueError('Image error')
-                true = [x.cuda() for x in data[1:]]
-
-                pred = model(image.cuda())
-
-                loss = model.total_loss_FreiHAND(pred, true)
-                loss.backward()
-                optimizer.step()
-                training_loss += loss.data.detach().cpu().numpy()
-            training_loss = training_loss / batch
-            log_loss = "Epoch : {}. FreiHAND Training loss: {}.\n".format(epoch, training_loss)
-            _log_loss(log_loss, log_name=log_loss_name)
-            print(log_loss)
-
         ### validate on HO3D dataset and save model ###
         if epoch != 0 and epoch % 5 == 0:
             validation_loss = 0.
@@ -249,7 +260,7 @@ if __name__ == '__main__':
             _log_loss(log_loss, log_name=log_loss_name)
             print(log_loss)
 
-            save_model_FCN_name = model_name + '_epoch_' + str(epoch) + '.pth'
+            save_model_FCN_name = model_name + '.pth'
             torch.save(model.state_dict(), save_model_FCN_name)
             print("model saved")
 

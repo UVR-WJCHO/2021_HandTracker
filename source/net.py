@@ -471,6 +471,49 @@ class UnifiedNet_res18(nn.Module, Network_utils):
         return self.split_result(pred_v_h, pred_v_o)
 
 
+class UnifiedNet_res18_noextra(nn.Module, Network_utils):
+
+    def __init__(self):
+        super(UnifiedNet_res18_noextra, self).__init__()
+
+        model = models.resnet18(pretrained=True)
+
+        self.features = nn.Sequential(*list(model.children())[:-2])
+
+        self.hand_vector_size = 3 * NUM_hand_control_points + 1 + NUM_visibility  # 63 + 1 + 21, (1 for confidence)
+        self.object_vector_size = 3 * NUM_object_control_points + 1 + NUM_objects  # 63 + 1 + 4
+        self.target_channel_size = DEPTH_discretization * (
+                    self.hand_vector_size + self.object_vector_size)  # 5 * 153 = 765
+
+        # prediction layers
+        self.conv = nn.Conv2d(512, self.target_channel_size, (3, 3), padding=1, bias=True)
+
+        # losses
+        self.setup_losses()
+
+
+    def forward(self, x):
+        batch = x.size()[0]
+        height, width = x.size()[2:]
+
+        assert height == width
+        assert height % 32 == 0
+
+        target_height, target_width = int(height / 32), int(width / 32)
+
+        x = self.features(x)
+        x = self.conv(x)
+        # x : (batch, 765, 13, 13)
+        x = x.view(-1, self.hand_vector_size + self.object_vector_size, DEPTH_discretization, target_height,
+                   target_width)
+
+        # x : (batch, 153, 5, 13, 13)
+        pred_v_h = x[:, :self.hand_vector_size, :, :, :]
+        pred_v_o = x[:, self.hand_vector_size:, :, :, :]
+
+        return self.split_result(pred_v_h, pred_v_o)
+
+
 if __name__ == '__main__':
     print("main loop")
     """

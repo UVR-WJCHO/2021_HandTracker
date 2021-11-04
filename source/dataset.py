@@ -34,6 +34,14 @@ jointsMapManoToSimple = [0,
                          10, 11, 12, 19,
                          7, 8, 9, 20]
 
+jointsMapSimpleToMano = [0,
+                         5, 6, 7,
+                         9, 10, 11,
+                         17, 18, 19,
+                         13, 14, 15,
+                         1, 2, 3,
+                         4, 8, 12, 16, 20]
+
 jointsMapFHADToSimple = [0,
                         1, 6, 7, 8,
                         2, 9, 10, 11,
@@ -46,7 +54,7 @@ VISIBLE_PARAM = 0.025
 
 class HO3D_v2_Dataset(Dataset):
 
-    def __init__(self, mode='train', root='../../dataset/HO3D_V2', cfg='train', loadit=False, augment=False, extra=False):
+    def __init__(self, mode='train', root='../../dataset/HO3D_V2', cfg='train', loadit=False, augment=False, extra=False, small=False):
         ###
         # initial setting
         # 640*480 image to 32*32*5 box
@@ -186,6 +194,14 @@ class HO3D_v2_Dataset(Dataset):
                             if np.abs(d_img - d_gt) < VISIBLE_PARAM:
                                 visible.append(i_vis)
 
+                        ### generate BoundingBox ###
+                        x_min = int(np.min(handKps[:, 0]))
+                        x_max = int(np.max(handKps[:, 0]))
+                        y_min = int(np.min(handKps[:, 1]))
+                        y_max = int(np.max(handKps[:, 1]))
+
+                        bbox = [x_min, y_min, x_max, y_max]
+
                         new_sample = {
                             'subject': subject,
                             'frame_idx': frame[:-4],
@@ -193,7 +209,8 @@ class HO3D_v2_Dataset(Dataset):
                             'handKps': handKps,
                             'objJoints3D': objJoints3D,
                             'objKps': objKps,
-                            'visible': visible
+                            'visible': visible,
+                            'bb': bbox
                         }
                         self.samples[idx] = new_sample
                         idx += 1
@@ -207,6 +224,11 @@ class HO3D_v2_Dataset(Dataset):
             self.samples = self.load_samples()
             ### test meta data has missing annotation, only acquire images in 'train' folder ###
             #self.mode = 'train'
+
+            if small:
+                sample_len = int(len(self.samples) / 8)
+                self.samples = self.samples[:sample_len]
+
             self.sample_len = len(self.samples)
 
 
@@ -329,17 +351,17 @@ class HO3D_v2_Dataset(Dataset):
         sample = self.samples[idx]
         frame_idx = int(sample['frame_idx'])
 
-        # handKps = np.copy(sample['handKps'])
-        # handJoints3D = np.copy(sample['handJoints3D'])
-        # objKps = np.copy(sample['objKps'])
-        # objJoints3D = np.copy(sample['objJoints3D'])
-        # visible = np.copy(sample['visible'])
+        handKps = np.copy(sample['handKps'])
+        handJoints3D = np.copy(sample['handJoints3D'])
+        objKps = np.copy(sample['objKps'])
+        objJoints3D = np.copy(sample['objJoints3D'])
+        visible = np.copy(sample['visible'])
 
-        handKps = sample['handKps']
-        handJoints3D = sample['handJoints3D']
-        objKps = sample['objKps']
-        objJoints3D = sample['objJoints3D']
-        visible = sample['visible']
+        # handKps = sample['handKps']
+        # handJoints3D = sample['handJoints3D']
+        # objKps = sample['objKps']
+        # objJoints3D = sample['objJoints3D']
+        # visible = sample['visible']
 
         ### check GT values ###
         # depth_proc = np.copy(depth)
@@ -355,11 +377,6 @@ class HO3D_v2_Dataset(Dataset):
         # # cv2.imshow("depthAnno", depthAnno)
         # cv2.waitKey(0)
 
-        ### rescale keypoints first for extrapolation & augmentation ###
-        handKps[:, 0] = handKps[:, 0] / self.downsample_ratio_x
-        handKps[:, 1] = handKps[:, 1] / self.downsample_ratio_y
-        objKps[:, 0] = objKps[:, 0] / self.downsample_ratio_x
-        objKps[:, 1] = objKps[:, 1] / self.downsample_ratio_y
 
         ### preprocess extrapolated keypoint GT ###
         image = None
@@ -448,7 +465,41 @@ class HO3D_v2_Dataset(Dataset):
         ### Augmentation with GTs ###
         if self.loadit:
             image = self.get_image(sample)
-            # already processed color jitter, normalize to image
+
+            x_min, y_min, x_max, y_max = np.copy(sample['bb'])
+            x_min = int(x_min / self.downsample_ratio_x)
+            x_max = int(x_max / self.downsample_ratio_x)
+            y_min = int(y_min / self.downsample_ratio_y)
+            y_max = int(y_max / self.downsample_ratio_y)
+
+            # rgb = np.copy(image)
+            # cv2.imshow("original rgb", rgb)
+            # rgb_crop = rgb[max(0, y_min-60):min(416, y_max+60), max(0, x_min-60):min(416, x_max+60), :]
+            # cv2.imshow("cropped rgb", rgb_crop)
+            # cv2.waitKey(1)
+
+            image = image[max(0, y_min - 80):min(416, y_max + 80), max(0, x_min - 80):min(416, x_max + 80), :]
+            img_shape = image.shape
+            image = cv2.resize(image, dsize=(416, 416), interpolation=cv2.INTER_CUBIC)
+            # cv2.imshow("cropped rgb", rgb)
+            # cv2.waitKey(1)
+
+            handKps[:, 0] = handKps[:, 0] / self.downsample_ratio_x
+            handKps[:, 1] = handKps[:, 1] / self.downsample_ratio_y
+            objKps[:, 0] = objKps[:, 0] / self.downsample_ratio_x
+            objKps[:, 1] = objKps[:, 1] / self.downsample_ratio_y
+
+            handKps[:, 0] = (handKps[:, 0] - max(0, x_min - 80)) * (416 / img_shape[1])
+            handKps[:, 1] = (handKps[:, 1] - max(0, y_min - 80)) * (416 / img_shape[0])
+
+            objKps[:, 0] = (objKps[:, 0] - max(0, x_min - 80)) * (416 / img_shape[1])
+            objKps[:, 1] = (objKps[:, 1] - max(0, y_min - 80)) * (416 / img_shape[0])
+
+            # imgAnno = showHandJoints(image, handKps)  # showHandJoints_vis(img, xy_points, visible)
+            # imgAnno_rgb = imgAnno[:, :, [2, 1, 0]]
+            # cv2.imshow("rgb pred", imgAnno_rgb)
+            # cv2.waitKey(1)
+
             if self.augment:
                 if self.extra and flag_nonzero_extra:
                     noise = np.random.normal(0, 1., mixed_handKps.shape)
@@ -474,8 +525,8 @@ class HO3D_v2_Dataset(Dataset):
                     objKps = Kps[21:, :]
 
                 ### random crop out image region ###
-                # transformed = self.albumtransform_img(image=image)
-                # image = transformed['image']
+                transformed = self.albumtransform_img(image=image)
+                image = transformed['image']
 
             image = np.squeeze(np.transpose(image, (2, 0, 1)))
             image = torch.from_numpy(image)
@@ -547,7 +598,8 @@ class HO3D_v2_Dataset(Dataset):
 
             extra_hand_pose = torch.cat((enc_cell, del_u, del_v, del_z), 0)  # tensor (4, 21)
 
-        return image, true_hand_pose, hand_mask, true_object_pose, object_mask, param_vis, vis, extra_hand_pose
+        else:
+            return image, true_hand_pose, hand_mask, true_object_pose, object_mask, param_vis, vis, extra_hand_pose
 
 
     def load_objects(self, obj_root):
@@ -691,7 +743,7 @@ class HO3D_v2_Dataset(Dataset):
 
 class FHAD_Dataset(Dataset):
 
-    def __init__(self, mode='train', root='../../dataset/First_Person_Action_Benchmark-selected', loadit=False, cfg=None, extra=False, augment=False):
+    def __init__(self, mode='train', root='../../dataset/First_Person_Action_Benchmark-selected', loadit=False, cfg=None, extra=False, augment=False, small=False):
         ###
         # initial setting
         # 1920*1080 image to 32*32*5 box
@@ -865,6 +917,10 @@ class FHAD_Dataset(Dataset):
 
         else:
             self.samples = self.load_samples(mode)
+
+            if small:
+                sample_len = int(len(self.samples) / 8)
+                self.samples = self.samples[:sample_len]
 
 
     def load_samples(self, mode):
@@ -1069,6 +1125,16 @@ class FHAD_Dataset(Dataset):
                 image = image[:-1, :, :]
             image = self.normalize(image)
 
+        #### rescale 3D keypoints for grid ###
+        handJoints3D[:, 0] = handJoints3D[:, 0] / self.downsample_ratio_x
+        handJoints3D[:, 1] = handJoints3D[:, 1] / self.downsample_ratio_y
+        objJoints3D[:, 0] = objJoints3D[:, 0] / self.downsample_ratio_x
+        objJoints3D[:, 1] = objJoints3D[:, 1] / self.downsample_ratio_y
+
+        if self.loadit and self.extra:
+            mixed_handJoints3D[:, 0] = mixed_handJoints3D[:, 0] / self.downsample_ratio_x
+            mixed_handJoints3D[:, 1] = mixed_handJoints3D[:, 1] / self.downsample_ratio_y
+
         # hand pose tensor
         del_u, del_v, del_z, cell = self.control_to_target(handKps, handJoints3D, self.loadit)
 
@@ -1103,7 +1169,7 @@ class FHAD_Dataset(Dataset):
         # true_object_prob[z, v, u] = object_category[sample['object']]
 
         ### extrapolated hand pose ###
-        extra_hand_pose = None
+        extra_hand_pose = torch.zeros(4, 21, dtype=torch.float32)
         if self.loadit and self.extra:
             del_u, del_v, del_z, cell = self.control_to_target(mixed_handKps, mixed_handJoints3D, True)
 
@@ -1270,7 +1336,7 @@ class FHAD_Dataset(Dataset):
 
 class FreiHAND_Dataset(Dataset):
 
-    def __init__(self, mode='train', root='../../dataset/FreiHAND', loadit=False, augment=False):
+    def __init__(self, mode='train', root='../../dataset/FreiHAND', loadit=False, augment=False, small=False):
         ###
         # initial setting
         # 224*224 image to 32*32*5 box
@@ -1372,7 +1438,13 @@ class FreiHAND_Dataset(Dataset):
 
         else:
             self.samples = self.load_samples(self.mode)
+
+            if small:
+                sample_len = int(len(self.samples) / 8)
+                self.samples = self.samples[:sample_len]
+
             self.sample_len = len(self.samples)
+
 
 
     def load_samples(self, name):
@@ -1477,6 +1549,10 @@ class FreiHAND_Dataset(Dataset):
             print("image shape wrong")
             image = image[:-1, :, :]
         image = self.normalize(image)
+
+        #### rescale 3D keypoints for grid ###
+        handJoints3D[:, 0] = handJoints3D[:, 0] / self.downsample_ratio_x
+        handJoints3D[:, 1] = handJoints3D[:, 1] / self.downsample_ratio_y
 
         ### hand pose ###
         del_u, del_v, del_z, cell = self.control_to_target(handKps, handJoints3D, self.loadit)  # handKps : [215.8, 182.1] , ...   /  handJoints3D : [~, ~, 462.2] , ...

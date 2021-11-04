@@ -33,7 +33,7 @@ from positional_encodings import PositionalEncoding1D, PositionalEncoding2D, Pos
 
 def _log_loss(args, init=False):
     if init:
-        log_name = '../models/log_test_' + args['load_model'] + '_loss.txt'
+        log_name = '../models/log_test_' + args['load_model'] + '.txt'
         with open(log_name, mode='wt', encoding='utf-8') as f:
             f.write('[Loss log]\n')
         return log_name
@@ -42,15 +42,14 @@ def _log_loss(args, init=False):
 if __name__ == '__main__':
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("-load_model", required=False, type=str, default='FCN_1022_total')
+    ap.add_argument("-load_model", required=False, type=str, default='FCN_1028_noextra')
     ap.add_argument("-iknet", required=False, type=bool, default=False, help="activate iknet")
-    ap.add_argument("-load_GT", required=False, type=bool, default=True, help="load GT extrapolation")
-    ap.add_argument("-extra", required=False, type=bool, default=True,
+    ap.add_argument("-load_GT", required=False, type=bool, default=False, help="load GT extrapolation")
+    ap.add_argument("-extra", required=False, type=bool, default=False,
                     help="activate extrapolation")  # action='store_true'
 
-    ap.add_argument("-num_worker", required=False, type=int, default=4)
-    ap.add_argument("-augment", required=False, type=bool, default=True, help="activate augmentation")
-    ap.add_argument("-res34", required=False, type=bool, default=True, help="use res34 backbone")
+    ap.add_argument("-num_worker", required=False, type=int, default=1)
+    ap.add_argument("-res34", required=False, type=bool, default=False, help="use res34 backbone")
     ap.add_argument("-lowerdim", required=False, type=bool, default=True, help="concatenate extra feature on lower part of network")
 
     args = vars(ap.parse_args())
@@ -58,7 +57,7 @@ if __name__ == '__main__':
     log_output_name = _log_loss(args, init=True)
 
     ############## Load dataset and set dataloader ##############
-    testing_dataset_HO3D = HO3D_v2_Dataset(mode='test', cfg='test', loadit=True, augment=False, extra=args['extra'])
+    testing_dataset_HO3D = HO3D_v2_Dataset(mode='test', cfg='test', loadit=True, extra=args['extra'])
     # training_dataset = UnifiedPoseDataset(mode='train', loadit=True, name='train')
     testing_dataloader = torch.utils.data.DataLoader(testing_dataset_HO3D, batch_size=1, shuffle=False, num_workers=args['num_worker'])
 
@@ -69,9 +68,13 @@ if __name__ == '__main__':
         if args['lowerdim']:
             model = UnifiedNet_res34_lowconcat()
     else:
-        model = UnifiedNet_res18()
-        if args['lowerdim']:
-            model = UnifiedNet_res18_lowconcat()
+        if not args['extra']:
+            model = UnifiedNet_res18_noextra()
+            print("...testing without extra")
+        else:
+            model = UnifiedNet_res18()
+            if args['lowerdim']:
+                model = UnifiedNet_res18_lowconcat()
 
     assert args['load_model'] is not None, 'need model name to load'
 
@@ -84,6 +87,8 @@ if __name__ == '__main__':
     z = torch.zeros((1, 13, 13, 5, 21))
     pos_encoder = p_enc_3d(z)
 
+    downsample_ratio_x = 640./ 416.
+    downsample_ratio_y = 480./ 416.
 
     if args['iknet']:
         render = o3d_render(config.HAND_MESH_MODEL_PATH)
@@ -122,33 +127,39 @@ if __name__ == '__main__':
             image = data[0]
             if torch.isnan(image).any():
                 raise ValueError('Image error')
-            true = [x.cuda() for x in data[1:-2]]
+            true = [x.cuda() for x in data[1:-3]]
 
             if args['load_GT']:
                 if args['extra']:
-                    extra = data[-1]
+                    extra = data[-2]
                     pred = model(image.cuda(), extra.cuda())
                 else:
                     pred = model(image.cuda())
 
             else:
-                flag_seq = data[-1]
-
-                if flag_seq:
-                    counting_idx = 0
-
                 if args['extra']:
+                    if data[-1]:
+                        counting_idx = 0
                     if counting_idx < 2:
                         counting_idx += 1
 
                         extra_handKps = np.zeros((21, 2), dtype=np.float32)
                         extra_handJoints3D = np.zeros((21, 3), dtype=np.float32)
-
                     else:
-                        extra_handKps = 2 * prev_handKps_1 - prev_handKps_2
-                        extra_handJoints3D = 2 * prev_handJoints3D_1 - prev_handJoints3D_2
+                        root = prev_handKps_1[0, :] - prev_handKps_2[0, :]
+                        dist = np.sqrt(root[0] * root[0] + root[1] * root[1])
 
-                    del_u, del_v, del_z, cell = testing_dataset_HO3D.control_to_target(extra_handKps, extra_handJoints3D)
+                        if dist < 10.:
+                            extra_handKps = np.copy(2 * prev_handKps_1 - prev_handKps_2)
+                            extra_handJoints3D =  np.copy(2 * prev_handJoints3D_1 - prev_handJoints3D_2)
+                        else:
+                            extra_handKps = np.copy(prev_handKps_1)
+                            extra_handJoints3D = np.copy(prev_handJoints3D_1)
+
+                    extra_handKps[:, 0] = extra_handKps[:, 0] / downsample_ratio_x
+                    extra_handKps[:, 1] = extra_handKps[:, 1] / downsample_ratio_y
+
+                    del_u, del_v, del_z, cell = testing_dataset_HO3D.control_to_target(extra_handKps, extra_handJoints3D, True)
                     # hand pose tensor
                     # index + del, with positional encoding
                     del_u = torch.unsqueeze(torch.from_numpy(del_u), 0).type(torch.float32)
@@ -179,15 +190,20 @@ if __name__ == '__main__':
             pred_object_cell = np.unravel_index(pred_object_conf.argmax(), pred_object_conf.shape)
 
             z, v, u = pred_hand_cell[1:]
+
+            ### highest confidence value ###
+            # highest_conf = pred_hand_conf[0, :, z, v, u]. reshape(21, 3)
+            # print("highest conf value : ", 0)
+
             dels = pred_hand_pose[0, :, z, v, u].reshape(21, 3)
             del_u, del_v, del_z = dels[:, 0], dels[:, 1], dels[:, 2]
             hand_points, xy_points = testing_dataset_HO3D.target_to_control(del_u, del_v, del_z, (u, v, z))
 
-            prev_handJoints3D_2 = prev_handJoints3D_1
-            prev_handKps_2 = prev_handKps_1
+            prev_handJoints3D_2 = np.copy(prev_handJoints3D_1)
+            prev_handKps_2 = np.copy(prev_handKps_1)
 
-            prev_handJoints3D_1 = hand_points
-            prev_handKps_1 = np.transpose(xy_points)[:, :-1]    # (21, 2)
+            prev_handJoints3D_1 = np.copy(hand_points)
+            prev_handKps_1 = np.transpose(np.copy(xy_points))[:, :-1]    # (21, 2)
 
             dels_true = true_hand_pose[0, :, z, v, u].reshape(21, 3)
             del_u, del_v, del_z = dels_true[:, 0], dels_true[:, 1], dels_true[:, 2]
@@ -221,13 +237,16 @@ if __name__ == '__main__':
             #     if vis_pred[i] > 0.5:
             #         visible.append(i)
             #
-            # img = testing_dataset_HO3D.fetch_image(testing_dataset_HO3D.samples[batch])
-            # xy_points = np.transpose(xy_points)
-            # imgAnno = showHandJoints(img, xy_points) #showHandJoints_vis(img, xy_points, visible)
-            # imgAnno_rgb = imgAnno[:, :, [2, 1, 0]]
-            # #imgAnno_rgb = cv2.flip(imgAnno_rgb, 1)
-            # cv2.imshow("rgb pred", imgAnno_rgb)
-            # cv2.waitKey(0)
+            img = testing_dataset_HO3D.fetch_image(testing_dataset_HO3D.samples[batch])
+            #xy_points = true_xy_points
+            xy_points = np.transpose(xy_points)
+            xy_points[:, 0] *= 640 / 416.
+            xy_points[:, 1] *= 480 / 416.
+            imgAnno = showHandJoints(img, xy_points) #showHandJoints_vis(img, xy_points, visible)
+            imgAnno_rgb = imgAnno[:, :, [2, 1, 0]]
+            #imgAnno_rgb = cv2.flip(imgAnno_rgb, 1)
+            cv2.imshow("rgb pred", imgAnno_rgb)
+            cv2.waitKey(0)
 
             ############################ IKNet ############################
             if args['iknet']:
