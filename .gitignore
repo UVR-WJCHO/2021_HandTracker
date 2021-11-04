@@ -1,1 +1,3 @@
-./models/*.*
+./models/
+./source/backup/
+./cfg/
