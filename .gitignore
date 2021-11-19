@@ -2,3 +2,5 @@ models/*.*
 models/backup/*.*
 source/backup/*.*
 cfg/*.*
+cfg/*/*.*
+source/data/*.*

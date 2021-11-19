@@ -33,7 +33,7 @@ class Network_utils():
         total_pose_loss = self.pose_loss(pred_hand_pose, true_hand_pose, hand_mask) + self.pose_loss(pred_object_pose,
                                                                                                      true_object_pose,
                                                                                                      object_mask)
-        #total_pose_loss *= 2.
+        # total_pose_loss *= 2.
 
         total_conf_loss = self.conf_loss(pred_hand_conf, pred_hand_pose, true_hand_pose, hand_mask) + self.conf_loss(
             pred_object_conf, pred_object_pose, true_object_pose, object_mask)
@@ -55,7 +55,7 @@ class Network_utils():
         total_pose_loss = self.pose_loss(pred_hand_pose, true_hand_pose, hand_mask) + self.pose_loss(pred_object_pose,
                                                                                                      true_object_pose,
                                                                                                      object_mask)
-        #total_pose_loss *= 2.
+        # total_pose_loss *= 2.
 
         total_conf_loss = self.conf_loss(pred_hand_conf, pred_hand_pose, true_hand_pose, hand_mask) + self.conf_loss(
             pred_object_conf, pred_object_pose, true_object_pose, object_mask)
@@ -69,11 +69,29 @@ class Network_utils():
     def total_loss_FreiHAND(self, pred, true):
 
         pred_hand_pose, pred_hand_conf, _, _, _ = pred
+        true_hand_pose, hand_mask, _ = true
+
+        total_pose_loss = self.pose_loss(pred_hand_pose, true_hand_pose, hand_mask)
+
+        # total_pose_loss *= 2.
+
+        total_conf_loss = self.conf_loss(pred_hand_conf, pred_hand_pose, true_hand_pose, hand_mask)
+
+        #total_action_loss = self.action_loss(pred_action_prob, true_action_prob, hand_mask)
+        #total_object_loss = self.object_loss(pred_object_prob, true_object_prob, object_mask)
+
+        total_loss = total_pose_loss + total_conf_loss#+ total_action_loss + total_object_loss
+
+        return total_loss
+
+    def total_loss_Obman(self, pred, true):
+
+        pred_hand_pose, pred_hand_conf, _, _, _ = pred
         true_hand_pose, hand_mask = true
 
         total_pose_loss = self.pose_loss(pred_hand_pose, true_hand_pose, hand_mask)
 
-        #total_pose_loss *= 2.
+        # total_pose_loss *= 2.
 
         total_conf_loss = self.conf_loss(pred_hand_conf, pred_hand_pose, true_hand_pose, hand_mask)
 

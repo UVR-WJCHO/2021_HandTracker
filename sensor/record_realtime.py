@@ -17,26 +17,17 @@ from Realsense import Realsense
 
 if __name__=="__main__":
     '''user setting'''
-    save_enabled=True
-    dataset_type='test_real_blur'  #'train'  'test' 'test_real_blur'
-    frame_saved=1000
-    
-    if dataset_type=='test_real_blur':
-        frame_start=-1000
-        frame_end=200
-        
-          
-    '''run'''
-    if dataset_type=='test_real_blur':
-        save_filepath='./save_pth/test/'
+    save_enabled = False
+    frame_saved = 0
+    frame = 0
+    save_filepath = './save_pth/'
     
     ##--init realsense--##
     realsense = Realsense.Realsense()
      
     try:
-        #while True:
-        for frame in range(frame_start,frame_end):
-            if frame==0:
+        while True:
+            if frame is 0:
                 print('start recording..')
                 
             realsense.run()
@@ -57,20 +48,14 @@ if __name__=="__main__":
             cv2.imshow('color',color)
             
             #save original image
-            if save_enabled==True and frame>-1:
-                cv2.imwrite(save_filepath+'depth%d.png'%frame_saved,depth)
-                cv2.imwrite(save_filepath+'color%d.png'%frame_saved,color)
+            if save_enabled is True and frame>-1:
+                cv2.imwrite(save_filepath+'depth_%d.png'%frame_saved,depth)
+                cv2.imwrite(save_filepath+'color_%d.png'%frame_saved,color)
                 frame_saved+=1
-            
-            if dataset_type=='test_real_blur': 
-                cv2.waitKey(1)
-            else:
-                cv2.waitKey(100)
-            
-            if frame==frame_end:
-                break
-            
-            if frame%100==0:
+
+            cv2.waitKey(1)
+            frame += 1
+            if frame % 100 is 0:
                 print('frame..',frame)
             
     finally:
